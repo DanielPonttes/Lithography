@@ -1,0 +1,33 @@
+# Virtualenvs
+venv/
+.venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# Third-party clones (clone via notebook)
+lithobench/
+neural-ilt/
+
+# Datasets / pesos / artefatos de treino (grandes demais p/ Git)
+work/
+saved/*.pth
+*.pth
+*.pt
+*.ckpt
+*.tar.gz
+*.zip
+
+# Saídas geradas
+*.png
+!docs/**/*.png
+
+# IDE / SO
+.vscode/
+.idea/
+.DS_Store
+*.swp
