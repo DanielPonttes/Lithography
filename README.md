@@ -46,6 +46,11 @@ No notebook, execute as células em ordem:
 - **Path do checkpoint**: o comando de teste apontava para
   `saved/MetalSet_NeuralILT/net.pth` (que só contém `README.md`). Ajustado para
   o caminho real `work/MetalSet_NeuralILT/net.pth` gerado pelo `train.py`.
+- **Compat scipy ≥1.9 em `adaptive-boxes`**: `stats.mode().mode` passou de array
+  para escalar; o `thirdparty/adaptive-boxes/adabox/tools.py` do LithoBench
+  indexava com `[0]` e quebrava o `--shots` no `test.py`. Patch versionado em
+  `patches/adabox-scipy-compat.patch` e aplicado por uma célula do notebook
+  logo após o clone.
 - **Heatmap de hotspots**: implementada a célula final que antes era só um
   comentário-placeholder. Carrega o checkpoint, roda o NeuralILT + `LithoSim`
   para obter as contornos *nominal/inner/outer*, e salva `|outer − inner|`

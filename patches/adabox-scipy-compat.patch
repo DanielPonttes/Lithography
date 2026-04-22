@@ -1,0 +1,16 @@
+diff --git a/thirdparty/adaptive-boxes/adabox/tools.py b/thirdparty/adaptive-boxes/adabox/tools.py
+index 64cf9cb..5604799 100755
+--- a/thirdparty/adaptive-boxes/adabox/tools.py
++++ b/thirdparty/adaptive-boxes/adabox/tools.py
+@@ -244,7 +244,10 @@ def get_separation_value(data_2d_global_arg):
+         diffs_x[p] = np.abs(x_data[x_rand_num] - x_data[x_rand_num + 1])
+         diffs_y[p] = np.abs(y_data[y_rand_num] - y_data[y_rand_num + 1])
+ 
+-    sep_value_val = (stats.mode(diffs_x).mode[0] + stats.mode(diffs_y).mode[0]) / 2
++    # Compat scipy >=1.9: stats.mode().mode passou a ser escalar (antes array).
++    _mx = np.atleast_1d(stats.mode(diffs_x, keepdims=False).mode)[0]
++    _my = np.atleast_1d(stats.mode(diffs_y, keepdims=False).mode)[0]
++    sep_value_val = (_mx + _my) / 2
+     # print(sep_value_val)
+     return sep_value_val
+ 
