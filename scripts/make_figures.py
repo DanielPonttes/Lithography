@@ -51,7 +51,7 @@ for ax, m in zip(axes, metrics):
         ax.text(b.get_x() + b.get_width()/2, v, f'{v:.1f}',
                 ha='center', va='bottom', fontsize=9)
     ax.set_ylim(0, max(mi, mf) * 1.18)
-fig.suptitle('NeuralILT / MetalSet — Init vs. Finetuned (media 10 testcases)')
+fig.suptitle('NeuralILT / MetalSet — Init vs. Finetuned (mean over 10 testcases)')
 fig.tight_layout()
 fig.savefig(f'{OUT}/metrics_compare.png'); plt.close(fig)
 
@@ -64,7 +64,7 @@ for ax, m in zip(axes, ['L2', 'PVBand', 'EPE']):
     ax.set_xticks(x); ax.set_xlabel('Testcase')
     ax.set_title(m); ax.grid(axis='y', alpha=0.3)
 axes[0].legend(frameon=False)
-fig.suptitle('Metricas por testcase — NeuralILT / MetalSet')
+fig.suptitle('Per-testcase metrics — NeuralILT / MetalSet')
 fig.tight_layout()
 fig.savefig(f'{OUT}/metrics_per_testcase.png'); plt.close(fig)
 
@@ -78,8 +78,8 @@ for i in range(10):
     ax.plot([init_data['L2'][i], ft_data['L2'][i]],
             [init_data['PVBand'][i], ft_data['PVBand'][i]],
             color='gray', alpha=0.35, lw=0.8)
-ax.set_xlabel('L2 (area de erro)'); ax.set_ylabel('PVBand (area)')
-ax.set_title('Tradeoff L2 x PVBand  (setas Init -> Finetuned)')
+ax.set_xlabel('L2 (error area)'); ax.set_ylabel('PVBand (area)')
+ax.set_title('L2 vs. PVBand tradeoff  (arrows: Init -> Finetuned)')
 ax.legend(frameon=False); ax.grid(alpha=0.3)
 fig.tight_layout(); fig.savefig(f'{OUT}/l2_vs_pvband.png'); plt.close(fig)
 
@@ -109,7 +109,7 @@ for idx, tgt in enumerate(targets):
     for ax, img, t, cmap in zip(
         axs,
         [tgt_np, mask_np, nom_np, pv_np],
-        ['Target', 'Mascara NeuralILT', 'Litho nominal', 'PVBand (hotspots)'],
+        ['Target', 'NeuralILT mask', 'Nominal litho', 'PVBand (hotspots)'],
         ['gray', 'gray', 'gray', 'hot'],
     ):
         im = ax.imshow(img, cmap=cmap); ax.set_title(t); ax.axis('off')
@@ -126,8 +126,8 @@ pvband_cat = np.concatenate(pvband_all)
 pvband_cat = pvband_cat[pvband_cat > 1e-3]  # remove zeros dominantes
 fig, ax = plt.subplots(figsize=(6, 3.8))
 ax.hist(pvband_cat, bins=60, color='#E53935', alpha=0.85, edgecolor='k')
-ax.set_yscale('log'); ax.set_xlabel('|outer - inner|  (intensidade PVBand por pixel)')
-ax.set_ylabel('# pixels (log)'); ax.set_title('Distribuicao de hotspots (PVBand)')
+ax.set_yscale('log'); ax.set_xlabel('|outer - inner|  (per-pixel PVBand intensity)')
+ax.set_ylabel('# pixels (log)'); ax.set_title('Hotspot distribution (PVBand)')
 ax.grid(alpha=0.3)
 fig.tight_layout(); fig.savefig(f'{OUT}/pvband_hist.png'); plt.close(fig)
 
