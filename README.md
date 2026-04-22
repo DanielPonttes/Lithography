@@ -67,6 +67,10 @@ Geradas por `scripts/make_figures.py` em `figures/`:
 | `l2_vs_pvband.png`              | Dispersão L2×PVBand com setas Init→Finetuned                  |
 | `hotspot_panel_{1..4}.png`      | Painel: target · máscara · litho nominal · heatmap PVBand     |
 | `pvband_hist.png`               | Distribuição (log) dos valores de PVBand por pixel            |
+| `overlay_target_mask_{1..4}.png`| Target em cinza + contorno da máscara NeuralILT em ciano      |
+| `hotspot_threshold_{1..4}.png`  | PVBand contínuo vs mapa binário de hotspots (> 0,15)          |
+| `pvband_cdf.png`                | CDF do PVBand por testcase com threshold marcado              |
+| `epe_per_testcase.png`          | Foco no EPE Init vs Finetuned (destaque do ganho)             |
 | `metrics_summary.json`          | Médias/std/delta% das métricas                                |
 
 ### Resultados principais (MetalSet, 10 testcases)
