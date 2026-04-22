@@ -25,6 +25,7 @@ saved/*.pth
 # Saídas geradas
 *.png
 !docs/**/*.png
+!figures/**/*.png
 
 # IDE / SO
 .vscode/

@@ -56,6 +56,32 @@ No notebook, execute as células em ordem:
   para obter as contornos *nominal/inner/outer*, e salva `|outer − inner|`
   como heatmap (`hot` colormap) em `work/hotspots/`.
 
+## Figuras (artigo Chip in Sampa)
+
+Geradas por `scripts/make_figures.py` em `figures/`:
+
+| Arquivo                         | O que mostra                                                  |
+| ------------------------------- | ------------------------------------------------------------- |
+| `metrics_compare.png`           | Média das 4 métricas (L2, PVBand, EPE, Shots) Init vs Finetuned |
+| `metrics_per_testcase.png`      | L2 / PVBand / EPE por testcase (10 casos)                     |
+| `l2_vs_pvband.png`              | Dispersão L2×PVBand com setas Init→Finetuned                  |
+| `hotspot_panel_{1..4}.png`      | Painel: target · máscara · litho nominal · heatmap PVBand     |
+| `pvband_hist.png`               | Distribuição (log) dos valores de PVBand por pixel            |
+| `metrics_summary.json`          | Médias/std/delta% das métricas                                |
+
+### Resultados principais (MetalSet, 10 testcases)
+
+| Métrica | Init   | Finetuned | Δ       |
+| ------- | ------ | --------- | ------- |
+| L2      | 36 688 | 27 492    | −25,1 % |
+| PVBand  | 42 659 | 42 865    | +0,5 %  |
+| EPE     | 7,3    | 2,0       | −72,6 % |
+| Shots   | 472    | 513       | +8,7 %  |
+
+O finetune do NeuralILT via ILT pixel-based reduz drasticamente o EPE (7,3 → 2,0)
+mantendo PVBand praticamente inalterado e reduzindo L2 em 25 %, ao custo de
+~9 % a mais de shots — trade-off consistente com a literatura.
+
 ## Licenças de terceiros
 
 Os repositórios clonados em runtime possuem suas próprias licenças
