@@ -1,0 +1,19 @@
+# PyTorch CUDA 12.8 wheels for Windows x64 and Python 3.12.
+# Keep the local CUDA build suffixes exact so pip cannot resolve CPU-only builds.
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+torch==2.11.0+cu128
+torchvision==0.26.0+cu128
+
+numpy
+matplotlib
+scipy
+pandas
+opencv-python
+networkx
+plyfile
+optuna
+torchsummary
+einops
+ipykernel
+jupyterlab

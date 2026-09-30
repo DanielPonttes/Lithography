@@ -32,3 +32,4 @@ saved/*.pth
 .idea/
 .DS_Store
 *.swp
+.venv-cpu/
