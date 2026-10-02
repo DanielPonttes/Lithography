@@ -248,9 +248,10 @@ fechados: o código não indexa seus campos no arquivo agregado nem calcula mét
 
 ## Artefatos e execução
 
-O comando exige CUDA e, por padrão, confirma que o dispositivo é `NVIDIA GeForce RTX 5090`. `--output-root` deve ser
-absoluto. O limite padrão é 30 minutos para a execução; cada LP tem limite padrão de 60 segundos. O limite não estende o
-processo com iterações artificiais: ao vencer, o estado registrado é timeout e o progresso parcial permanece disponível.
+O comando exige CUDA e, por padrão, confirma que o dispositivo é `NVIDIA GeForce RTX 5090`. Para uma execução nova,
+`--output-root` deve ser absoluto. `--resume-run` recebe o diretório de uma execução existente e permite omitir
+`--output-root`. O limite padrão é 30 minutos por invocação; cada LP tem limite padrão de 60 segundos. Ao vencer, o
+estado registra timeout e o progresso parcial fica disponível para retomada.
 
 Exemplo no PowerShell, substituindo pelos caminhos do ambiente autorizado:
 
@@ -272,6 +273,21 @@ python scripts/optimize_source_constrained.py `
   --checkpoint-interval 25
 ```
 
+Para retomar a mesma execução, mantenha os arquivos de dataset e diagnóstico e a configuração de solver, iterações e
+checkpoints. O orçamento `--timeout-seconds` vale para esta nova invocação e pode ser aumentado sem alterar a identidade
+científica do run:
+
+```powershell
+python scripts/optimize_source_constrained.py `
+  --dataset-file D:\dados\source_dataset.pt `
+  --diagnostic-file D:\resultados\diagnostic.json `
+  --resume-run D:\resultados\source_only\20261001T120000Z_ab12cd34 `
+  --timeout-seconds 3600 `
+  --solver-time-limit 60 `
+  --iterations-per-block 100 `
+  --checkpoint-interval 25
+```
+
 O executor usa PyTorch, NumPy e SciPy (`scipy.optimize.linprog` com HiGHS), listados em `requirements-light-source.txt`. As
 instalações presentes no ambiente de desenvolvimento já têm SciPy; este trabalho não instalou nem atualizou dependências.
 
@@ -284,15 +300,41 @@ Cada execução cria um subdiretório com identificador único:
   checkpoints e limites de execução.
 - `results.json`: controles, métricas, gaps, tentativas dos LPs, seleção e
   estado do gate, também substituído atomicamente.
+- `run_state.json`: snapshot canônico usado na retomada. Registra identidade dos
+  dados, diagnóstico, código dependente, runtime e solver; fase exata; resultados
+  acumulados; e, na semente ativa, pesos atuais, próximo beta/passo, histórico e
+  candidatas elegíveis. O estado atual da trajetória fica separado das candidatas
+  periódicas e dos fins de bloco, portanto um timeout no meio do bloco não cria
+  um ponto de seleção adicional. Na retomada, `results.json` e `progress.json`
+  são reconstruídos deste snapshot, nunca usados como fonte canônica.
 - `weights/*.pt`: a âncora LP, o controle anular, quando disponíveis, e a fonte
   selecionada por braço/semente. O arquivo guarda o vetor float64 nos 49 pontos
   suportados e a grade completa 9×9 com zeros fora do suporte.
 
 O retorno `complete` significa que o executor chegou ao fim normal; não quer dizer que algum candidato passou. Confira
-`selection.qualified_arms` e os campos de gate em `results.json`. Timeout retorna estado e saída não zero. Exceções após
-criar a pasta ficam registradas como `error` em progresso e resultados, preservando o que já existia. Uma falha antes da
-pasta de execução é relatada no stderr. Não existe retomada automática: cada nova execução cria outro diretório; um processo
-encerrado à força pelo sistema só preserva o último flush atômico que conseguiu escrever.
+`selection.qualified_arms` e os campos de gate em `results.json`. Timeout retorna estado e saída não zero. Falhas depois
+de criar a pasta, mas antes do primeiro snapshot canônico, podem deixar apenas um diretório parcial e a mensagem no stderr.
+Falhas do otimizador depois de um snapshot são registradas como `error` e exigem investigação antes de retomar. Uma falha
+ao gravar `progress.json` ou `results.json` é reportada sem alterar o snapshot canônico; depois de corrigir o acesso aos
+arquivos, uma nova invocação reconstrói os sidecars, inclusive para uma execução já `complete`. A retomada confere hashes do
+dataset/diagnóstico, descritores de base, runtime, fontes do código e configuração de solver; incompatibilidades e estados
+corrompidos são rejeitados sem reescrever resultados. Sementes já resolvidas, inclusive falhas terminais, são puladas. A avaliação de candidatos de
+calibração só começa quando todas as cinco sementes terminaram; se o run for interrompido antes disso, o campo
+`comparison.status` informa que a calibração dos candidatos segue fechada. A comparação `comparison.arms` separa métricas
+de ajuste e calibração e marca valores ainda não medidos por status. A calibração independente da fonte de contraste de
+borda começa quando as cinco sementes Frank–Wolfe estão resolvidas, incluindo falhas terminais. O gate Frank–Wolfe exige
+as cinco sementes bem-sucedidas; se alguma falhar, suas candidatas não são pontuadas, mas a avaliação independente da
+borda ainda pode terminar e o status final registra o conjunto Frank–Wolfe incompleto.
+
+Uma trava exclusiva impede duas invocações de escreverem no mesmo diretório. Ela nunca toma uma trava existente; se um
+encerramento forçado deixar `.run.lock`, confirme que o processo e o host indicados não estão mais executando antes de
+remover manualmente esse arquivo e retomar. Um snapshot de fase ativa com estado válido pode ser retomado depois dessa
+recuperação manual. Estados genéricos `error` são rejeitados e precisam de investigação antes de nova tentativa.
+Encerramentos tratados pelo processo liberam a trava. O checksum cobre o snapshot canônico inteiro e detecta alterações
+acidentais; ele não é uma assinatura de segurança. Os snapshots usam substituição atômica de arquivo; não fazem `fsync`
+e não prometem durabilidade contra falha de energia ou armazenamento.
+`results.runtime.cumulative_seconds` e `last_invocation_seconds` são atualizados a cada gravação canônica; após término
+forçado, contam até o último snapshot gravado.
 
 ## Organização das funções do novo executor
 
@@ -312,7 +354,7 @@ No arquivo `scripts/optimize_source_constrained.py`, os grupos centrais são:
   `candidate_row`, `choose_fit_checkpoint` e `fw_seed` medem a fonte em precisão
   física float32, filtram os pontos e executam sementes/blocos.
 - **Protocolo/execução** — `_save_protocol`, `_control_check`, `_gate`, `run`,
-  `persist_run_error` e `main` registram pré-condições, controlam o prazo,
+  `_resume_identity`, `_load_run_state`, `RunLock` e `main` registram pré-condições, controlam o prazo,
   avaliam o gate congelado e propagam falhas.
 
 A função de carregamento passa pelo tipo de dataset do diagnóstico, mas somente usa `payload["fit"]`; a geração de calibração
@@ -329,8 +371,10 @@ não têm paridade física certificada com o SOCS do LithoBench. EPE, shots e MR
 Os testes de `tests/test_constrained_source_optimization.py` usam bases pequenas sintéticas e não abrem o dataset de
 registro. Eles verificam acesso somente à chave `fit`, simplex/margem/mistura convexa, orientação e solução do LP de
 contraste, gradiente por diferenças finitas, viabilidade do oráculo, tratamento do callback/checkpoint, rejeição/restauração
-por falha float32, roundoff isolado do controle fixo, persistência de erro e critérios do gate. Para executá-los na pasta
-`Lithography`:
+por falha float32, roundoff isolado do controle fixo, critérios do gate, retomada idêntica após interrupções periódicas e
+de fim de bloco, retry do mesmo passo após timeout intermediário, validação de identidade/estado, trava exclusiva,
+fechamento da calibração em uma execução parcial e reparo dos sidecars a partir do estado canônico. O teste do executor
+usa mocks CPU e não inicia treinamento GPU. Para executá-los na pasta `Lithography`:
 
 ```powershell
 python -m unittest discover -s tests -p test_constrained_source_optimization.py -v
