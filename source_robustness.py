@@ -14,6 +14,8 @@ HIGH_DOSE = 1.02
 RESIST_STEEPNESS = 50.0
 SMOOTH_PV_BETA = 800.0
 BASIS_NONNEGATIVE_TOL = 0.0
+SOFTCOUNT_OBJECTIVE_ID = "target_aware_critical_corner_softcount_v1"
+SOFTCOUNT_BETA_SCHEDULE = (200.0, 400.0, 800.0)
 
 
 def validate_rho(rho: float) -> float:
@@ -354,3 +356,105 @@ def signed_margin_quantiles(
             },
         }
     return out
+
+
+def critical_corner_softcount_from_aerial(
+    aerial: torch.Tensor,
+    target: torch.Tensor,
+    beta: float,
+    threshold: float = THRESHOLD,
+) -> torch.Tensor:
+    """Mean target-aware critical-corner soft error probability for one layout.
+
+    The low-dose corner is limiting for target-positive pixels and the
+    high-dose corner is limiting for target-negative pixels. This is a smooth,
+    nonconvex surrogate for the corresponding hard error count; it has no LP
+    margin offset or margin normalization.
+    """
+    beta = float(beta)
+    threshold = float(threshold)
+    if not math.isfinite(beta) or beta <= 0:
+        raise ValueError("softcount beta must be finite and positive")
+    if not math.isfinite(threshold):
+        raise ValueError("threshold must be finite")
+    aerial, target_bool = _validate_aerial_target(aerial, target)
+    critical_margin = torch.where(
+        target_bool,
+        LOW_DOSE * aerial - threshold,
+        threshold - HIGH_DOSE * aerial,
+    )
+    return torch.sigmoid(-beta * critical_margin).mean()
+
+
+def target_aware_critical_corner_softcount(
+    weights: torch.Tensor,
+    bases: Mapping[str, torch.Tensor],
+    targets: Mapping[str, torch.Tensor],
+    beta: float,
+    threshold: float = THRESHOLD,
+) -> torch.Tensor:
+    """Equal-layout mean of critical-corner soft pixel error probabilities."""
+    if set(bases) != set(targets) or not bases:
+        raise ValueError("fit basis and target layout IDs must match and be non-empty")
+    beta = float(beta)
+    if not math.isfinite(beta) or beta <= 0:
+        raise ValueError("softcount beta must be finite and positive")
+    losses = []
+    for name, basis in bases.items():
+        if basis.ndim != 3 or basis.shape[0] != weights.numel():
+            raise ValueError("basis source dimension mismatch for %s" % name)
+        aerial = torch.einsum("n,nhw->hw", weights, basis)
+        target = torch.as_tensor(targets[name], device=aerial.device)
+        losses.append(critical_corner_softcount_from_aerial(
+            aerial, target, beta, threshold
+        ).reshape(()))
+    return torch.stack(losses).mean()
+
+
+def critical_corner_softcount_value_gradient(
+    weights: np.ndarray,
+    bases: Mapping[str, torch.Tensor],
+    targets: Mapping[str, torch.Tensor],
+    beta: float,
+    threshold: float = THRESHOLD,
+) -> tuple[float, np.ndarray]:
+    """Evaluate the softcount and 49-dimensional float64 source gradient."""
+    if not bases:
+        raise ValueError("at least one fit basis is required")
+    device = next(iter(bases.values())).device
+    variable = torch.tensor(
+        np.asarray(weights, dtype=np.float64), dtype=torch.float64,
+        device=device, requires_grad=True,
+    )
+    loss = target_aware_critical_corner_softcount(
+        variable, bases, targets, beta, threshold
+    )
+    if not torch.isfinite(loss):
+        raise FloatingPointError("non-finite critical-corner softcount loss")
+    loss.backward()
+    if variable.grad is None or not torch.isfinite(variable.grad).all():
+        raise FloatingPointError("missing or non-finite critical-corner softcount gradient")
+    return float(loss.detach().item()), variable.grad.detach().cpu().numpy().copy()
+
+
+def critical_corner_softcount_value(
+    weights: np.ndarray,
+    bases: Mapping[str, torch.Tensor],
+    targets: Mapping[str, torch.Tensor],
+    beta: float,
+    threshold: float = THRESHOLD,
+) -> float:
+    if not bases:
+        raise ValueError("at least one fit basis is required")
+    device = next(iter(bases.values())).device
+    variable = torch.as_tensor(
+        np.asarray(weights, dtype=np.float64), dtype=torch.float64, device=device
+    )
+    with torch.no_grad():
+        loss = target_aware_critical_corner_softcount(
+            variable, bases, targets, beta, threshold
+        )
+    value = float(loss.item())
+    if not math.isfinite(value):
+        raise FloatingPointError("non-finite critical-corner softcount value")
+    return value
