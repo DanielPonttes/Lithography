@@ -336,6 +336,25 @@ e não prometem durabilidade contra falha de energia ou armazenamento.
 `results.runtime.cumulative_seconds` e `last_invocation_seconds` são atualizados a cada gravação canônica; após término
 forçado, contam até o último snapshot gravado.
 
+### Benchmark sintético curto
+
+`scripts/benchmark_light_source.py` compara os caminhos direto com cache desligado/ligado e base residente na GPU ou
+transferida da CPU a cada passo. No Linux, informe uma raiz absoluta gravável; cada execução cria um subdiretório novo.
+No Windows, o padrão continua sendo `D:/Codex/Lithography/work/light_source_benchmark`.
+
+```bash
+python3 scripts/benchmark_light_source.py \
+  --output-root /caminho/absoluto/light_source_benchmark \
+  --microbenchmark-sizes 256 512 \
+  --repetitions 5 \
+  --iterations 20
+```
+
+O comando também executa o braço de qualidade, por padrão com raster 128, 40 passos e sementes `17`, `29`, `43`; use
+`--skip-quality` para omiti-lo. O benchmark exige CUDA. Os alvos de qualidade são sintéticos e ajustam somente os pesos
+da fonte; os resultados não demonstram paridade SOCS, EPE, quantidade de shots nem resultados em dados reais. A execução
+não otimiza máscaras, MRC ou pesos de hotspots.
+
 ## Organização das funções do novo executor
 
 No arquivo `scripts/optimize_source_constrained.py`, os grupos centrais são:

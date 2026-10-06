@@ -1,7 +1,8 @@
 """Short synthetic GPU benchmark for the experimental scalar Abbe light source.
 
 Outputs do not establish SOCS parity, EPE, shot count, or article results.
-All results are written below D:/Codex/Lithography/work/light_source_benchmark.
+By default, results are written below D:/Codex/Lithography/work/light_source_benchmark;
+--output-root selects another absolute result root.
 """
 import argparse
 import copy
@@ -686,28 +687,36 @@ def system_info(device):
     }
 
 
-def new_output_dir(requested):
-    root = RESULTS_ROOT.resolve()
-    root.mkdir(parents=True, exist_ok=True)
+def new_output_dir(requested, requested_root=None):
+    root = RESULTS_ROOT if requested_root is None else Path(requested_root)
+    if not root.is_absolute():
+        if requested_root is None:
+            raise ValueError(
+                f"default result root is not absolute on this platform: {root}; "
+                "pass --output-root with an absolute path"
+            )
+        raise ValueError(f"--output-root must be absolute, got {root}")
+    root = root.resolve()
     if requested is None:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         candidate = root / f"run_{stamp}_{uuid.uuid4().hex[:8]}"
     else:
         candidate = Path(requested).resolve()
-    if candidate.drive.upper() != "D:":
-        raise ValueError(f"result storage must be on D:, got {candidate}")
     try:
         candidate.relative_to(root)
     except ValueError as exc:
         raise ValueError(f"results must be below {root}") from exc
+    root.mkdir(parents=True, exist_ok=True)
     candidate.mkdir(parents=True, exist_ok=False)
     return candidate
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output-root", type=Path, default=None,
+                        help="absolute root for results (default: D:/Codex/Lithography/work/light_source_benchmark)")
     parser.add_argument("--output-dir", type=Path, default=None,
-                        help="new directory below D:/Codex/Lithography/work/light_source_benchmark")
+                        help="new directory below --output-root (default: unique run directory)")
     parser.add_argument("--microbenchmark-sizes", nargs="+", type=int, default=(256, 512))
     parser.add_argument("--repetitions", type=int, default=5)
     parser.add_argument("--iterations", type=int, default=20)
@@ -727,7 +736,7 @@ def main(argv=None):
     if any(size < 32 for size in args.microbenchmark_sizes):
         parser.error("microbenchmark sizes must be >=32")
     device = require_cuda()
-    out_dir = new_output_dir(args.output_dir)
+    out_dir = new_output_dir(args.output_dir, args.output_root)
     output_path = out_dir / "benchmark.json"
     report = {
         "schema_version": 1, "status": "running",
