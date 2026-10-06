@@ -11,6 +11,7 @@ import json
 import math
 from pathlib import Path
 import time
+from typing import Optional
 
 import torch
 import torch.nn.functional as F
@@ -139,6 +140,9 @@ class SourceFitConfig:
     objective: str = "envelope_squared"
     surrogate_steepness: float = 50.0
     surrogate_band_weight: float = 0.5
+    # Opt-in residency applies to training bases only. Validation stays on CPU.
+    device_basis_residency: str = "cpu"
+    max_resident_train_basis_bytes: Optional[int] = None
 
     def __post_init__(self):
         if isinstance(self.steps, bool) or not isinstance(self.steps, int) or self.steps < 1:
@@ -160,9 +164,19 @@ class SourceFitConfig:
         budgets = (self.max_basis_bytes, self.max_total_basis_bytes, self.max_device_basis_bytes)
         if any(isinstance(b, bool) or not isinstance(b, int) or b < 1 for b in budgets):
             raise ValueError("basis memory budgets must be positive integers")
+        if self.device_basis_residency not in ("cpu", "device", "auto"):
+            raise ValueError("device_basis_residency must be cpu, device, or auto")
+        resident_budget = self.max_resident_train_basis_bytes
+        if resident_budget is not None and (
+            isinstance(resident_budget, bool) or not isinstance(resident_budget, int)
+            or resident_budget < 1
+        ):
+            raise ValueError("max_resident_train_basis_bytes must be a positive integer when set")
+        if self.device_basis_residency != "cpu" and resident_budget is None:
+            raise ValueError("device/auto residency requires an explicit aggregate training-basis budget")
 
 
-def _prepare(simulator, dataset, focuses, config):
+def _prepare(simulator, dataset, focuses, config, keep_on_device=False):
     result = []
     verified = []
     device = simulator.source.logits.device
@@ -181,7 +195,7 @@ def _prepare(simulator, dataset, focuses, config):
                     verified.append({"layout_id": dataset.layout_ids[index],
                                      "defocus_nm": focus,
                                      "max_abs_error": float((direct - compiled).abs().max().item())})
-            bases[focus] = basis.cpu()
+            bases[focus] = basis if keep_on_device else basis.cpu()
         result.append(bases)
     return result, verified
 
@@ -193,7 +207,12 @@ def _cpu_state(module):
 
 def _printed(simulator, bases, corners, config):
     device = simulator.source.logits.device
-    aerials = {z: simulator.evaluate_basis(b.to(device), defocus_nm=z) for z, b in bases.items()}
+    aerials = {
+        z: simulator.evaluate_basis(
+            b if b.intensities.device == device else b.to(device), defocus_nm=z
+        )
+        for z, b in bases.items()
+    }
     return torch.stack([
         resist_image(aerials[c.defocus_nm], dose=c.dose,
                      threshold=config.threshold, steepness=config.steepness)
@@ -201,9 +220,10 @@ def _printed(simulator, bases, corners, config):
     ])
 
 
-def _release(bases):
-    for basis in bases.values():
-        basis.cpu()
+def _release(bases, keep_on_device=False):
+    if not keep_on_device:
+        for basis in bases.values():
+            basis.cpu()
 
 
 def _objective_components(printed, target, config):
@@ -234,7 +254,7 @@ def _objective(printed, target, config):
 
 
 @torch.no_grad()
-def evaluate_source(simulator, dataset, prepared, corners, config):
+def evaluate_source(simulator, dataset, prepared, corners, config, keep_on_device=False):
     nominal = next(i for i, c in enumerate(corners) if c.name == "nominal")
     records = []
     for index, bases in enumerate(prepared):
@@ -275,7 +295,7 @@ def evaluate_source(simulator, dataset, prepared, corners, config):
                 "objective": float(_objective(printed, target, config).item()),
             })
         finally:
-            _release(bases)
+            _release(bases, keep_on_device=keep_on_device)
     mean_keys = (
         "L2_pixels", "L2_worst_dose_pixels", "band_pixels", "flip_window_pixels",
         "continuous_fidelity_mse", "worst_dose_fidelity_mse",
@@ -294,9 +314,10 @@ def evaluate_source(simulator, dataset, prepared, corners, config):
 def fit_source(simulator, train, validation, corners=None, config=None, output_dir=None):
     """Fit one shared source; no masks or validation data receive updates.
 
-    Bases are held on CPU under a total byte budget and transferred one layout
-    at a time. A basis is reused for all doses at the same defocus. An optimizer
-    step accumulates the mean loss over every training layout.
+    By default bases are held on CPU and transferred one layout at a time.
+    Opt-in device residency retains training bases within an aggregate budget;
+    validation bases always stay on CPU. A basis is reused for all doses at the
+    same defocus. An optimizer step accumulates the mean loss over every layout.
     """
     config = config or SourceFitConfig()
     corners = tuple(process_grid() if corners is None else corners)
@@ -325,20 +346,59 @@ def fit_source(simulator, train, validation, corners=None, config=None, output_d
         raise MemoryError("optical bases require %d bytes per mask/focus and %d total; "
                           "reduce the dataset/raster or raise explicit memory budgets" % (per_basis, total))
 
+    estimated_train_device_bytes = per_basis * len(focuses) * len(train.masks)
+    residency_budget = config.max_resident_train_basis_bytes
+    residency_fallback_reason = None
+    device = simulator.source.logits.device
+    if config.device_basis_residency == "device" and device.type == "cpu":
+        raise ValueError("device basis residency requires a CUDA simulator; got CPU")
+    if config.device_basis_residency == "device":
+        if estimated_train_device_bytes > residency_budget:
+            raise MemoryError(
+                "training bases require %d aggregate device bytes, exceeding explicit "
+                "residency budget %d" % (estimated_train_device_bytes, residency_budget)
+            )
+        effective_residency = "device"
+    elif config.device_basis_residency == "auto":
+        if device.type == "cpu":
+            effective_residency = "cpu"
+            residency_fallback_reason = "simulator is on CPU; automatic device residency requires CUDA"
+        elif estimated_train_device_bytes <= residency_budget:
+            effective_residency = "device"
+        else:
+            effective_residency = "cpu"
+            residency_fallback_reason = (
+                "estimated training basis bytes %d exceed explicit residency budget %d"
+                % (estimated_train_device_bytes, residency_budget)
+            )
+    else:
+        effective_residency = "cpu"
+
     torch.manual_seed(config.seed)
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
     start = time.perf_counter()
-    train_bases, verified_train = _prepare(simulator, train, focuses, config)
+    train_bases, verified_train = _prepare(
+        simulator, train, focuses, config, keep_on_device=effective_residency == "device"
+    )
     validation_bases, verified_validation = _prepare(simulator, validation, focuses, config)
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
     preparation_seconds = time.perf_counter() - start
     initial_state = _cpu_state(simulator.source)
     initial_weights = simulator.source.weight_map().detach().cpu().tolist()
     before = {
-        "train": evaluate_source(simulator, train, train_bases, corners, config),
+        "train": evaluate_source(
+            simulator, train, train_bases, corners, config,
+            keep_on_device=effective_residency == "device",
+        ),
         "validation": evaluate_source(simulator, validation, validation_bases, corners, config),
     }
 
     optimizer = torch.optim.Adam([simulator.source.logits], lr=config.learning_rate)
     history = []
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
     start = time.perf_counter()
     for step in range(config.steps):
         optimizer.zero_grad(set_to_none=True)
@@ -353,14 +413,19 @@ def fit_source(simulator, train, validation, corners=None, config=None, output_d
                 loss.backward()
                 train_loss += float(loss.detach().item())
             finally:
-                _release(bases)
+                _release(bases, keep_on_device=effective_residency == "device")
         if simulator.source.logits.grad is None or not torch.isfinite(simulator.source.logits.grad).all():
             raise FloatingPointError("source gradient is missing or non-finite")
         optimizer.step()
         history.append({"step": step, "train_objective_before_update": train_loss})
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
     optimization_seconds = time.perf_counter() - start
     after = {
-        "train": evaluate_source(simulator, train, train_bases, corners, config),
+        "train": evaluate_source(
+            simulator, train, train_bases, corners, config,
+            keep_on_device=effective_residency == "device",
+        ),
         "validation": evaluate_source(simulator, validation, validation_bases, corners, config),
     }
     has_focus = any(c.defocus_nm != 0 for c in corners)
@@ -380,6 +445,15 @@ def fit_source(simulator, train, validation, corners=None, config=None, output_d
         "train_group_ids": list(train.group_ids), "validation_group_ids": list(validation.group_ids),
         "raster_shape": [h, w], "estimated_basis_bytes": total,
         "estimated_device_basis_bytes_per_layout": per_layout,
+        "estimated_train_device_basis_bytes": estimated_train_device_bytes,
+        "resident_basis_estimate_scope": (
+            "intensity tensor payload only; excludes basis metadata/buffers, internal clones, "
+            "validation construction temporaries, and other CUDA allocations"
+        ),
+        "requested_device_basis_residency": config.device_basis_residency,
+        "effective_device_basis_residency": effective_residency,
+        "max_resident_train_basis_bytes": residency_budget,
+        "device_basis_residency_fallback_reason": residency_fallback_reason,
         "basis_verification": verified_train + verified_validation,
         "train_masks_sha256": _target_hash(train.masks),
         "validation_masks_sha256": _target_hash(validation.masks),

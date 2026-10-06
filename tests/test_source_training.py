@@ -5,12 +5,14 @@ import unittest
 from unittest import mock
 
 import torch
+import source_training as source_training_module
 
 from light_source import DifferentiableAbbeLitho, PixelatedLightSource
 from source_training import (
     ProcessCorner, SourceDataset, SourceFitConfig, fit_source, process_grid,
     validate_splits,
 )
+from scripts.benchmark_source_residency import compare_fit_outputs
 
 
 def fixtures(alternate_validation=False):
@@ -110,6 +112,93 @@ class SourceTrainingTests(unittest.TestCase):
         val.pixel_size_nm = 4.0
         with self.assertRaisesRegex(ValueError, "pixel sizes"):
             validate_splits(train, val)
+
+    def test_residency_auto_fallback_is_pre_fft_and_matches_legacy_cpu(self):
+        train, val = fixtures()
+        fallback_sim, legacy_sim = simulator(), simulator()
+        config = SourceFitConfig(
+            steps=2, device_basis_residency="auto",
+            max_resident_train_basis_bytes=64 * 1024 ** 2,
+        )
+        with mock.patch.object(fallback_sim, "prepare_basis", wraps=fallback_sim.prepare_basis) as prepare:
+            fallback = fit_source(fallback_sim, train, val, config=config)
+        legacy = fit_source(legacy_sim, *fixtures(), config=SourceFitConfig(steps=2))
+        self.assertEqual(fallback["requested_device_basis_residency"], "auto")
+        self.assertEqual(fallback["effective_device_basis_residency"], "cpu")
+        self.assertIn("simulator is on CPU", fallback["device_basis_residency_fallback_reason"])
+        self.assertEqual(prepare.call_count, len(train.masks) + len(val.masks))
+        self.assertGreaterEqual(fallback["preparation_seconds"], 0.0)
+        self.assertGreaterEqual(fallback["optimization_seconds"], 0.0)
+        torch.testing.assert_close(fallback_sim.source.logits, legacy_sim.source.logits, rtol=0, atol=0)
+        self.assertEqual(fallback["history"], legacy["history"])
+        self.assertEqual(fallback["before"], legacy["before"])
+        self.assertEqual(fallback["after"], legacy["after"])
+
+    def test_explicit_device_residency_budget_fails_before_fft(self):
+        train, val = fixtures()
+        sim = simulator()
+        with mock.patch.object(sim, "prepare_basis", side_effect=AssertionError("FFT ran")):
+            with self.assertRaisesRegex(ValueError, "requires a CUDA simulator"):
+                fit_source(sim, train, val, config=SourceFitConfig(
+                    steps=1, device_basis_residency="device",
+                    max_resident_train_basis_bytes=1,
+                ))
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA residency budget validation runs on the GPU host")
+    def test_explicit_device_budget_fails_before_fft_on_cuda(self):
+        train, val = fixtures()
+        sim = simulator().cuda()
+        with mock.patch.object(sim, "prepare_basis", side_effect=AssertionError("FFT ran")):
+            with self.assertRaisesRegex(MemoryError, "aggregate device bytes"):
+                fit_source(sim, train, val, config=SourceFitConfig(
+                    steps=1, device_basis_residency="device",
+                    max_resident_train_basis_bytes=1,
+                ))
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA residency validation runs on the GPU host")
+    def test_resident_training_bases_stay_on_device_and_validation_bases_stay_cpu(self):
+        train, val = fixtures()
+        sim = simulator().cuda()
+        observed = []
+        original_prepare = source_training_module._prepare
+
+        def record_prepare(*args, **kwargs):
+            prepared, verified = original_prepare(*args, **kwargs)
+            observed.append([basis for row in prepared for basis in row.values()])
+            return prepared, verified
+
+        budget = 64 * 1024 ** 2
+        with mock.patch.object(source_training_module, "_prepare", side_effect=record_prepare):
+            report = fit_source(sim, train, val, config=SourceFitConfig(
+                steps=1, device_basis_residency="device",
+                max_resident_train_basis_bytes=budget,
+            ))
+        self.assertEqual(report["requested_device_basis_residency"], "device")
+        self.assertEqual(report["effective_device_basis_residency"], "device")
+        self.assertTrue(all(basis.intensities.device.type == "cuda" for basis in observed[0]))
+        self.assertTrue(all(basis.intensities.device.type == "cpu" for basis in observed[1]))
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA fit parity runs on the GPU host")
+    def test_cpu_and_device_residency_have_paired_fit_parity(self):
+        train, val = fixtures()
+        cpu_sim, device_sim = simulator().cuda(), simulator().cuda()
+        with torch.no_grad():
+            device_sim.source.logits.copy_(cpu_sim.source.logits)
+        budget = 64 * 1024 ** 2
+        cpu_report = fit_source(cpu_sim, train, val, config=SourceFitConfig(
+            steps=1, seed=29, device_basis_residency="cpu",
+            max_resident_train_basis_bytes=budget,
+        ))
+        device_report = fit_source(device_sim, *fixtures(), config=SourceFitConfig(
+            steps=1, seed=29, device_basis_residency="device",
+            max_resident_train_basis_bytes=budget,
+        ))
+        self.assertEqual(cpu_report["requested_device_basis_residency"], "cpu")
+        self.assertEqual(cpu_report["effective_device_basis_residency"], "cpu")
+        self.assertEqual(device_report["requested_device_basis_residency"], "device")
+        self.assertEqual(device_report["effective_device_basis_residency"], "device")
+        parity = compare_fit_outputs(cpu_report, device_report)
+        self.assertTrue(parity["ok"], parity["examples"])
 
     def test_dataset_and_corner_validation(self):
         with self.assertRaises(ValueError):

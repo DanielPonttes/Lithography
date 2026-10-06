@@ -336,6 +336,77 @@ e não prometem durabilidade contra falha de energia ou armazenamento.
 `results.runtime.cumulative_seconds` e `last_invocation_seconds` são atualizados a cada gravação canônica; após término
 forçado, contam até o último snapshot gravado.
 
+### Residência opcional das bases ópticas
+
+`fit_source` mantém o comportamento legado por padrão: cada base óptica de ajuste fica em CPU e é transferida para o dispositivo
+de cálculo durante a avaliação; ao terminar o layout, a base retorna a CPU. A configuração e a CLI também aceitam
+`device_basis_residency="device"` (`--device-basis-residency device`) para manter **todas** as bases de treino no dispositivo
+durante preparação, métricas antes/depois e atualizações. As bases de validação continuam em CPU e nunca recebem gradiente.
+As máscaras e alvos continuam sendo copiados por layout; ordem, número de itens, inicialização, precisão e objetivo permanecem
+iguais.
+
+As opções `device` e `auto` exigem `max_resident_train_basis_bytes` (ou `--max-resident-train-basis-mib`), que limita o total
+estimado das bases de treino no dispositivo. `device` falha antes da primeira FFT se o total não couber. `auto` decide antes
+da primeira FFT: mantém as bases no dispositivo se o orçamento agregado couber, caso contrário executa o caminho CPU e registra
+o motivo da escolha no relatório. O campo `max_device_basis_bytes` existente continua limitando cada layout e todos os focos;
+`max_total_basis_bytes` continua limitando em conjunto a estimativa de treino e validação em qualquer política. Esses dois
+limites legados são separados do orçamento opt-in.
+
+O orçamento opt-in conta somente os tensores de intensidades das bases de treino. Não conta coordenadas, máscara de suporte,
+clones internos de `FixedMaskSourceBasis` ou buffers temporários. Com treino residente, as bases de validação ainda são
+calculadas no dispositivo do simulador antes de cada base ser copiada para CPU, enquanto as bases de treino permanecem lá;
+cuFFT, autograd e o alocador também podem elevar o pico de GPU. O limite é uma estimativa do payload residente, não uma reserva
+nem um teto do pico total. O benchmark registra picos totais `allocated` e `reserved` para medir esse efeito.
+
+Se o simulador estiver em CPU, a política explícita `device` falha antes da FFT. `auto` escolhe CPU e registra esse motivo,
+mesmo quando o orçamento de bytes permitiria residência.
+
+Exemplo de treino opt-in com fallback determinístico:
+
+```bash
+python3 scripts/train_light_source.py \
+  --train-data /dados/train.pt \
+  --validation-data /dados/validation.pt \
+  --output /resultados/source \
+  --device cuda \
+  --device-basis-residency auto \
+  --max-resident-train-basis-mib 512
+```
+
+O A/B de `fit_source` compara apenas residência CPU e no dispositivo, com os mesmos layouts sintéticos, alvos, fonte inicial e
+configuração. Warm-up roda separadamente para cada semente e braço, com o mesmo número de passos da medição por padrão, e fica
+fora dos tempos reportados. A ordem alterna entre repetições pareadas; com as três sementes e cinco repetições padrão, a
+distribuição prevista e registrada é 8 pares CPU primeiro e 7 dispositivo primeiro. O relatório também guarda as contagens
+observadas e não adiciona uma repetição para forçar equilíbrio. O arquivo único `benchmark.json` guarda proveniência
+(HEAD, caminhos sujos e hashes das fontes), hashes de máscaras/alvos, tempos de preparação, atualização e `fit_source` inteiro,
+picos totais `allocated` e `reserved` do alocador CUDA, métricas e pesos de cada braço e razões CPU/dispositivo pareadas. O
+preparo e o loop de atualização sincronizam CUDA em seus limites; o tempo total externo inclui métricas antes e depois e não
+inclui gravação do artefato ou checkpoints.
+
+Antes de medir, o benchmark valida divisão e alvos não triviais. Os tamanhos 256 e 512 usam o mesmo gerador de fixtures em
+pixels, não uma geometria física recalibrada; registre o tamanho no resultado e interprete cada tamanho separadamente. A
+paridade compara pesos e valores contínuos com `rtol=1e-6`, `atol=1e-7` e exige igualdade exata de todas as contagens hard. NaN
+e infinitos são divergências. Um artefato de falha os representa explicitamente como
+`{"__nonfinite_float__":"NaN"}`, `{"__nonfinite_float__":"+Infinity"}` ou
+`{"__nonfinite_float__":"-Infinity"}`; os valores permanecem falhas e nunca são substituídos por zero. Se Git não estiver
+disponível, o benchmark falha antes de medir e salva a falha com os hashes das fontes. A execução também falha se a política
+pedida diferir da efetiva. Um valor máximo absoluto igual a zero é registrado como `bitwise_equal=true`. Uma divergência encerra
+a execução com estado `failed`. A aprovação de paridade ou um ganho de tempo não estabelece paridade SOCS, EPE, shots ou
+qualidade em dados reais.
+
+Exemplo reprodutível em Linux para o raster 128 e configuração sintética conhecida:
+
+```bash
+python3 scripts/benchmark_source_residency.py \
+  --output-root /resultados/source_residency \
+  --raster 128 --steps 40 --repetitions 5 --seeds 17 29 43 \
+  --resident-budget-mib 512
+```
+
+Cada execução cria um diretório exclusivo e um único `benchmark.json`. O benchmark exige CUDA; não escreve checkpoints dentro
+do tempo medido. Pode-se selecionar `--raster 256` ou `--raster 512`; o preflight continua obrigatório e uma reprovação ou
+orçamento insuficiente fica registrada como falha, sem redimensionar ou trocar as fixtures.
+
 ### Benchmark sintético curto
 
 `scripts/benchmark_light_source.py` compara os caminhos direto com cache desligado/ligado e base residente na GPU ou

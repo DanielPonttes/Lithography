@@ -34,8 +34,17 @@ def main(argv=None):
     parser.add_argument("--max-total-basis-mib", type=int, default=512)
     parser.add_argument("--max-device-basis-mib", type=int, default=256,
                         help="maximum retained basis bytes per layout, including all focuses")
+    parser.add_argument("--device-basis-residency", choices=("cpu", "device", "auto"),
+                        default="cpu",
+                        help="training basis location; validation bases always remain on CPU")
+    parser.add_argument("--max-resident-train-basis-mib", type=int, default=None,
+                        help="explicit aggregate GPU budget for all training bases; required for device/auto")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args(argv)
+    if args.device_basis_residency != "cpu" and args.max_resident_train_basis_mib is None:
+        parser.error("--device-basis-residency device/auto requires --max-resident-train-basis-mib")
+    if args.max_resident_train_basis_mib is not None and args.max_resident_train_basis_mib < 1:
+        parser.error("--max-resident-train-basis-mib must be positive")
     train = SourceDataset.load(args.train_data)
     validation = SourceDataset.load(args.validation_data)
     source = PixelatedLightSource(args.grid_size, args.sigma_inner, args.sigma_outer)
@@ -52,6 +61,11 @@ def main(argv=None):
             max_total_basis_bytes=args.max_total_basis_mib * 1024 ** 2,
             max_device_basis_bytes=args.max_device_basis_mib * 1024 ** 2,
             seed=args.seed,
+            device_basis_residency=args.device_basis_residency,
+            max_resident_train_basis_bytes=(
+                None if args.max_resident_train_basis_mib is None
+                else args.max_resident_train_basis_mib * 1024 ** 2
+            ),
         ), output_dir=args.output,
     )
     print("Held-out Abbe metrics (%s; not calibrated to SOCS):" % report["band_type"])
