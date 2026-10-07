@@ -1,8 +1,11 @@
 import ast
 import copy
 import hashlib
+import json
 import tempfile
+import time
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -41,6 +44,125 @@ def diagnostic_contract_fixture():
         for name in ids
     ]
     return {"input": input_data}
+
+
+def full_run_fixture(root: Path):
+    manifest = root / "manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+    weights = np.zeros(49, dtype=np.float64)
+    weights[0] = 1.0
+    old_rows = [{"layout_id": "original_fit_toy", "target": np.zeros((1, 1), dtype=bool)}]
+    new_rows = [{"layout_id": name, "target": np.zeros((1, 1), dtype=bool)}
+                for name in coverage.LAYOUT_IDS]
+    all_ids = [row["layout_id"] for row in old_rows + new_rows]
+    basis32 = {name: np.zeros((49, 1, 1), dtype=np.float32) for name in all_ids}
+    basis64 = {name: value.astype(np.float64) for name, value in basis32.items()}
+    basis_torch = {name: torch.zeros((49, 1, 1), dtype=torch.float64) for name in all_ids}
+    targets_torch = {row["layout_id"]: torch.zeros((1, 1), dtype=torch.bool)
+                     for row in old_rows + new_rows}
+    identity = {
+        "source_identity": {"head": "toy-clean-head"}, "lineage_artifacts": [],
+        "diagnostic": {"input": {}},
+        "previous_weights": {"canonical_basis_parity": coverage.PINNED_BASIS_PARITY},
+    }
+    context = {
+        "identity": identity, "fresh_fit_parity": [], "lineage_artifacts": [],
+        "rows": old_rows, "device": "cpu", "original_guard_summary": {},
+        "reference_fit": {"mean": {"band_pixels": 0.0}},
+        "reference_poly": {"passed": True}, "reference_audit": {"passed": True},
+        "basis32": {name: basis32[name] for name in [row["layout_id"] for row in old_rows]},
+        "basis64": {name: basis64[name] for name in [row["layout_id"] for row in old_rows]},
+        "basis_torch": {name: basis_torch[name] for name in [row["layout_id"] for row in old_rows]},
+        "targets_torch": {name: targets_torch[name] for name in [row["layout_id"] for row in old_rows]},
+        "anchor": weights.copy(), "reference": weights.copy(),
+    }
+    plan = {
+        "prerequisite_manifest": str(manifest), "input_hashes": {},
+        "physical": {"raster": 128}, "new_fit_generation": {},
+    }
+    args = SimpleNamespace(
+        output_root=str(root / "output"), plan_file=str(root / "frozen-plan.json"),
+        expected_previous_sha256=coverage.PINNED_PREVIOUS_REPORT_SHA256,
+        started_at=time.time(),
+    )
+    return {
+        "root": root, "manifest": manifest, "plan": plan, "plan_sha": "a" * 64,
+        "identity": identity, "context": context, "args": args,
+        "old_rows": old_rows, "new_rows": new_rows, "basis32": basis32,
+        "basis64": basis64, "basis_torch": basis_torch,
+        "targets_torch": targets_torch, "weights": weights,
+    }
+
+
+class FullRunDomain:
+    def verify(self, weights):
+        return {"passed": bool(np.isfinite(weights).all()), "maximum_row_violation": 0.0}
+
+
+def complete_seed_result(harness, seed, qualified=True):
+    weights = harness["weights"].tolist()
+    selected = None if not qualified else {
+        "qualified": True, "weights": weights, "weights_sha256": "c" * 64,
+        "checkpoint_order": 25,
+        "new_fit_mean": {"band_pixels": 10.0, "L2_worst_dose_pixels": 1.0,
+                         "L2_pixels": 0.0},
+        "selection_soft_objective": 0.125, "l1_to_lp_anchor": 0.0,
+    }
+    return {
+        "seed": seed, "status": "complete", "steps_completed": 204,
+        "history": [{"step": 1, "weights_after_sha256": "c" * 64}],
+        "checkpoints": [{"checkpoint_order": 25, "qualified": bool(qualified)}],
+        "last_incumbent": {"seed": seed, "steps_completed": 204, "weights": weights},
+        "selected": selected,
+    }
+
+
+def install_full_run_mocks(harness, stack: ExitStack, *, seed_side_effect=None,
+                           identity_side_effect=None, calibration_side_effect=None):
+    identity = harness["identity"]
+    context = harness["context"]
+    new_rows = harness["new_rows"]
+    new_ids = [row["layout_id"] for row in new_rows]
+    stack.enter_context(patch.object(runner, "_preflight",
+                                     return_value=(harness["plan"], harness["plan_sha"], identity)))
+    stack.enter_context(patch.object(runner, "_prepare_original_controls", return_value=context))
+    stack.enter_context(patch.object(coverage, "make_coverage_masks", return_value=("toy-mask-only",)))
+    stack.enter_context(patch.object(runner, "_generate_new_targets", return_value=new_rows))
+    stack.enter_context(patch.object(runner, "_novelty_check", return_value=[{"layout_id": name}
+                                                                            for name in new_ids]))
+    stack.enter_context(patch.object(
+        runner, "_prepare_basis",
+        return_value=(None,
+                      {name: context["basis32"].get(name, harness["basis32"][name])
+                       for name in new_ids},
+                      {name: harness["basis64"][name] for name in new_ids},
+                      {name: harness["basis_torch"][name] for name in new_ids},
+                      {name: harness["targets_torch"][name] for name in new_ids}, []),
+    ))
+    stack.enter_context(patch.object(runner, "_assert_identity_unchanged",
+                                     side_effect=identity_side_effect or (lambda *_: identity)))
+    stack.enter_context(patch.object(runner, "_start_seed_clock",
+                                     side_effect=lambda _check: (time.monotonic(), 0.0)))
+    stack.enter_context(patch.object(coverage, "build_guarded_domain",
+                                     return_value=(FullRunDomain(), {"toy": True})))
+    stack.enter_context(patch.object(coverage, "verify_original_nominal_polytope",
+                                     return_value={"passed": True, "row_count": 1}))
+    stack.enter_context(patch.object(runner, "_evaluate_rows", return_value={
+        "mean": {"band_pixels": 10.0, "L2_pixels": 0.0, "L2_worst_dose_pixels": 1.0},
+        "per_layout": [], "no_blank_positive_target_any_dose": True,
+    }))
+    stack.enter_context(patch.object(coverage, "audit_float32_critical_guards", return_value={
+        "passed": True, "groups": [], "pixel_count": 0, "correct_count": 0, "failed_count": 0,
+    }))
+    if seed_side_effect is None:
+        seed_side_effect = lambda seed, *_args: complete_seed_result(harness, seed)
+    stack.enter_context(patch.object(runner, "_run_seed", side_effect=seed_side_effect))
+    if calibration_side_effect is None:
+        calibration_side_effect = lambda *_args: {"passed": True, "toy": True}
+    calibration_mock = stack.enter_context(patch.object(
+        runner, "_calibration_metrics", side_effect=calibration_side_effect
+    ))
+    return calibration_mock
 
 
 class CoverageTests(unittest.TestCase):
@@ -354,6 +476,243 @@ class CoverageTests(unittest.TestCase):
             self.assertTrue(report["coverage_attempt_consumed"])
             self.assertEqual(report["calibration_status"], "closed")
 
+    def test_run_full_incomplete_seed_keeps_seed_report_and_calibration_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = full_run_fixture(Path(tmp))
+
+            def incomplete(seed, *_args):
+                return {"seed": seed, "status": "timeout", "steps_completed": 3,
+                        "history": [{"step": 1}, {"step": 2}, {"step": 3}],
+                        "checkpoints": [], "last_incumbent": {"steps_completed": 3},
+                        "selected": None}
+
+            with ExitStack() as stack:
+                calibration = install_full_run_mocks(harness, stack, seed_side_effect=incomplete)
+                report_path = runner.run(harness["args"])
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "timeout")
+            self.assertEqual(report["calibration_status"], "closed")
+            self.assertEqual(len(report["seeds"]), 1)
+            self.assertEqual(report["seeds"][0]["status"], "timeout")
+            self.assertEqual(len(report["seeds"][0]["history"]), 3)
+            self.assertEqual(report["seeds"][0]["last_incumbent"]["steps_completed"], 3)
+            calibration.assert_not_called()
+
+    def test_run_full_complete_seed_without_qualified_checkpoint_closes_calibration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = full_run_fixture(Path(tmp))
+
+            def one_seed_unqualified(seed, *_args):
+                return complete_seed_result(harness, seed, qualified=(seed != coverage.SEEDS[0]))
+
+            with ExitStack() as stack:
+                calibration = install_full_run_mocks(
+                    harness, stack, seed_side_effect=one_seed_unqualified
+                )
+                report_path = runner.run(harness["args"])
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "no_fit_qualified_checkpoint")
+            self.assertEqual(report["calibration_status"], "closed")
+            self.assertFalse(report["fit_frozen"])
+            self.assertEqual(len(report["seeds"]), len(coverage.SEEDS))
+            self.assertTrue(all(row["status"] == "complete" for row in report["seeds"]))
+            self.assertIsNone(report["seeds"][0]["selected"])
+            calibration.assert_not_called()
+
+    def test_run_full_freeze_is_persisted_before_calibration_exception(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = full_run_fixture(Path(tmp))
+
+            def fail_after_open(*_args):
+                report_path = next((harness["root"] / "output").rglob("coverage_report.json"))
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                self.assertTrue(report["fit_frozen"])
+                self.assertTrue(report["fit_frozen_sha256"])
+                self.assertEqual(report["calibration_status"], "opened_once_in_progress")
+                self.assertTrue(report["coverage_attempt_consumed"])
+                raise RuntimeError("toy calibration failure after opening")
+
+            with ExitStack() as stack:
+                calibration = install_full_run_mocks(
+                    harness, stack, calibration_side_effect=fail_after_open
+                )
+                with self.assertRaisesRegex(RuntimeError, "toy calibration failure"):
+                    runner.run(harness["args"])
+            calibration.assert_called_once()
+            report_path = next((harness["root"] / "output").rglob("coverage_report.json"))
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "error")
+            self.assertEqual(report["calibration_status"], "opened_then_failed_no_retry")
+            self.assertTrue(report["coverage_attempt_consumed"])
+            self.assertTrue(report["fit_frozen"])
+            self.assertEqual(len(report["seeds"]), len(coverage.SEEDS))
+            self.assertTrue(report["error"]["traceback"])
+
+    def test_run_full_post_seed_identity_drift_keeps_seed_and_closes_calibration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = full_run_fixture(Path(tmp))
+            calls = {"count": 0}
+
+            def drift_after_first_seed(*_args):
+                calls["count"] += 1
+                if calls["count"] == 2:  # first check after new FIT bases; second after seed 17
+                    raise RuntimeError("toy post-seed identity drift")
+                return harness["identity"]
+
+            with ExitStack() as stack:
+                calibration = install_full_run_mocks(
+                    harness, stack, identity_side_effect=drift_after_first_seed
+                )
+                with self.assertRaisesRegex(RuntimeError, "post-seed identity drift"):
+                    runner.run(harness["args"])
+            calibration.assert_not_called()
+            report_path = next((harness["root"] / "output").rglob("coverage_report.json"))
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["calibration_status"], "closed")
+            self.assertEqual(len(report["seeds"]), 1)
+            self.assertEqual(report["seeds"][0]["seed"], coverage.SEEDS[0])
+            self.assertEqual(report["seeds"][0]["status"], "complete")
+            self.assertTrue(report["seeds"][0]["selected"]["qualified"])
+            self.assertIn("identity drift", report["error"]["message"])
+
+    def test_run_full_precalibration_identity_drift_keeps_frozen_fit_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = full_run_fixture(Path(tmp))
+            calls = {"count": 0}
+
+            def drift_before_calibration(*_args):
+                calls["count"] += 1
+                if calls["count"] == 7:  # post-basis + five post-seed checks + pre-calibration
+                    raise RuntimeError("toy pre-calibration identity drift")
+                return harness["identity"]
+
+            with ExitStack() as stack:
+                calibration = install_full_run_mocks(
+                    harness, stack, identity_side_effect=drift_before_calibration
+                )
+                with self.assertRaisesRegex(RuntimeError, "pre-calibration identity drift"):
+                    runner.run(harness["args"])
+            calibration.assert_not_called()
+            report_path = next((harness["root"] / "output").rglob("coverage_report.json"))
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["calibration_status"], "closed")
+            self.assertEqual(report["status"], "error")
+            self.assertTrue(report["fit_frozen"])
+            self.assertTrue(report["fit_frozen_sha256"])
+            self.assertEqual(len(report["seeds"]), len(coverage.SEEDS))
+
+    def test_run_full_midtrajectory_timeout_preserves_partial_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = full_run_fixture(Path(tmp))
+
+            def timeout_after_one_step(seed, *_args):
+                history = [{"phase": 0, "local_step": 0, "status": "accepted"}]
+                incumbent = {"seed": seed, "steps_completed": 1,
+                             "weights": harness["weights"].tolist(), "event": "accepted"}
+                return {"seed": seed, "status": "timeout", "steps_completed": 1,
+                        "history": history, "checkpoints": [],
+                        "last_incumbent": incumbent, "selected": None}
+
+            with ExitStack() as stack:
+                calibration = install_full_run_mocks(
+                    harness, stack, seed_side_effect=timeout_after_one_step
+                )
+                report_path = runner.run(harness["args"])
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            seed = report["seeds"][0]
+            self.assertEqual(report["status"], "timeout")
+            self.assertEqual(report["calibration_status"], "closed")
+            self.assertEqual(seed["status"], "timeout")
+            self.assertGreaterEqual(seed["steps_completed"], 1)
+            self.assertGreaterEqual(len(seed["history"]), 1)
+            self.assertEqual(seed["last_incumbent"]["steps_completed"], 1)
+            self.assertNotEqual(seed["status"], "complete")
+            calibration.assert_not_called()
+
+    def test_run_full_solver_exception_persists_partial_progress_without_selection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = full_run_fixture(Path(tmp))
+
+            def raise_after_progress(seed, *args):
+                checkpoint_callback, iteration_callback = args[-2], args[-1]
+                history = [{"phase": 0, "local_step": 0, "status": "accepted"}]
+                checkpoint = {"checkpoint_order": 1, "beta": coverage.BETAS[0],
+                              "weights": harness["weights"].tolist(),
+                              "weights_sha256": "c" * 64, "qualified": False}
+                checkpoints = [checkpoint]
+                incumbent = {"seed": seed, "steps_completed": 1,
+                             "weights": harness["weights"].tolist(), "event": "accepted"}
+                iteration_callback(incumbent, history, checkpoints)
+                checkpoint_callback(seed, checkpoint, history, checkpoints, incumbent)
+                raise RuntimeError("toy checkpoint metrics failure")
+
+            with ExitStack() as stack:
+                calibration = install_full_run_mocks(
+                    harness, stack, seed_side_effect=raise_after_progress
+                )
+                with self.assertRaisesRegex(RuntimeError, "toy checkpoint metrics failure"):
+                    runner.run(harness["args"])
+            calibration.assert_not_called()
+            report_path = next((harness["root"] / "output").rglob("coverage_report.json"))
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["calibration_status"], "closed")
+            self.assertEqual(report["status"], "error")
+            self.assertEqual(len(report["seeds"]), 1)
+            partial = report["seeds"][0]
+            self.assertEqual(partial["status"], "solver_exception")
+            self.assertEqual(partial["steps_completed"], 1)
+            self.assertEqual(len(partial["history"]), 1)
+            self.assertEqual(len(partial["checkpoints"]), 1)
+            self.assertEqual(partial["last_incumbent"]["steps_completed"], 1)
+            self.assertIsNone(partial["selected"])
+            self.assertIn("checkpoint metrics failure", partial["failure"]["traceback"])
+
+    def test_run_full_solver_exception_before_callback_does_not_reuse_prior_seed_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = full_run_fixture(Path(tmp))
+
+            def fail_on_second_seed(seed, *_args):
+                if seed == coverage.SEEDS[0]:
+                    return complete_seed_result(harness, seed)
+                raise RuntimeError("toy failure before seed callback")
+
+            with ExitStack() as stack:
+                calibration = install_full_run_mocks(
+                    harness, stack, seed_side_effect=fail_on_second_seed
+                )
+                with self.assertRaisesRegex(RuntimeError, "before seed callback"):
+                    runner.run(harness["args"])
+            calibration.assert_not_called()
+            report_path = next((harness["root"] / "output").rglob("coverage_report.json"))
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["calibration_status"], "closed")
+            self.assertEqual(len(report["seeds"]), 2)
+            self.assertEqual(report["seeds"][0]["seed"], coverage.SEEDS[0])
+            partial = report["seeds"][1]
+            self.assertEqual(partial["seed"], coverage.SEEDS[1])
+            self.assertEqual(partial["status"], "solver_exception")
+            self.assertEqual(partial["steps_completed"], 0)
+            self.assertEqual(partial["history"], [])
+            self.assertIsNone(partial["last_incumbent"])
+            self.assertIsNone(partial["selected"])
+
+    def test_run_full_five_seed_freeze_and_calibration_happy_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = full_run_fixture(Path(tmp))
+            with ExitStack() as stack:
+                calibration = install_full_run_mocks(harness, stack)
+                report_path = runner.run(harness["args"])
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            calibration.assert_called_once()
+            self.assertEqual(report["status"], "complete")
+            self.assertEqual(report["calibration_status"], "scored_once_after_fit_freeze")
+            self.assertTrue(report["coverage_attempt_consumed"])
+            self.assertTrue(report["fit_frozen"])
+            self.assertTrue(report["fit_frozen_sha256"])
+            self.assertEqual(len(report["seeds"]), len(coverage.SEEDS))
+            self.assertEqual(len(report["fit_selection"]), len(coverage.SEEDS))
+            self.assertTrue(report["calibration_gate_passed"])
+
     def test_seed_clock_starts_after_preseed_identity_audit(self):
         ticks = iter((10.0, 18.0, 20.0))
         started, audit_seconds = runner._start_seed_clock(
@@ -432,7 +791,8 @@ class CoverageTests(unittest.TestCase):
             result = runner._run_seed(
                 17, reference, reference, Domain(), rows, rows[:1], rows[1:],
                 arrays32, arrays64, tensors, targets, {}, {}, 1000.0, 2000.0,
-                lambda _seed, row, _history: checkpoints.append(row["checkpoint_order"]),
+                lambda _seed, row, _history, _checkpoints, _incumbent:
+                    checkpoints.append(row["checkpoint_order"]),
                 lambda *_args: None,
             )
         self.assertEqual(result["status"], "complete")

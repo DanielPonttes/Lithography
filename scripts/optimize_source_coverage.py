@@ -742,7 +742,7 @@ def _run_seed(seed, ref, anchor, domain, all_rows, old_rows, new_rows,
                     np.asarray(current, dtype="<f8")
                 )
                 checkpoints.append(record)
-                checkpoint_callback(seed, record, history)
+                checkpoint_callback(seed, record, history, checkpoints, last_incumbent)
     qualified = [row for row in checkpoints if row.get("qualified")]
     selected = min(qualified, key=coverage.checkpoint_rank) if qualified else None
     return {
@@ -1058,11 +1058,15 @@ def run(args) -> Path:
             })
             seed_deadline = seed_started + seed_budget
 
-            def checkpoint_callback(seed_value, checkpoint, history):
+            def checkpoint_callback(seed_value, checkpoint, history, checkpoints, current_incumbent):
                 progress_path = run_dir / ("seed_%03d_progress.json" % int(seed_value))
                 progress = {"seed": int(seed_value), "history": list(history),
+                            "checkpoints": list(checkpoints),
+                            "current_incumbent": current_incumbent,
                             "last_checkpoint": checkpoint}
                 _atomic_json(progress_path, progress)
+                report["current_checkpoints"] = progress["checkpoints"]
+                report["current_incumbent"] = current_incumbent
                 report["active_seed"] = int(seed_value)
                 report["active_progress_path"] = str(progress_path)
                 report["last_checkpoint"] = {
@@ -1093,12 +1097,54 @@ def run(args) -> Path:
                 )
                 _atomic_json(report_path, report)
 
-            result = _run_seed(
-                seed, reference, anchor, domain, all_rows, context["rows"], new_rows,
-                basis32, basis64, basis_torch, targets_torch, plan["physical"],
-                ref_new["mean"], seed_started, seed_deadline,
-                checkpoint_callback, iteration_callback,
-            )
+            progress_path = run_dir / ("seed_%03d_progress.json" % int(seed))
+            report["current_incumbent"] = None
+            report["current_checkpoints"] = []
+            report["active_seed"] = int(seed)
+            report["active_step"] = 0
+            report["active_progress_path"] = str(progress_path)
+            try:
+                result = _run_seed(
+                    seed, reference, anchor, domain, all_rows, context["rows"], new_rows,
+                    basis32, basis64, basis_torch, targets_torch, plan["physical"],
+                    ref_new["mean"], seed_started, seed_deadline,
+                    checkpoint_callback, iteration_callback,
+                )
+            except Exception as seed_exc:
+                seed_traceback = traceback.format_exc()
+                partial_progress = {}
+                try:
+                    partial_progress = json.loads(progress_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    partial_progress = {}
+                if partial_progress.get("seed") != int(seed):
+                    partial_progress = {}
+                history = partial_progress.get("history", [])
+                checkpoints = partial_progress.get("checkpoints", [])
+                incumbent = partial_progress.get("current_incumbent")
+                if not isinstance(incumbent, dict) or incumbent.get("seed") != int(seed):
+                    incumbent = report.get("current_incumbent")
+                if not isinstance(incumbent, dict) or incumbent.get("seed") != int(seed):
+                    incumbent = None
+                report["seeds"].append({
+                    "seed": int(seed), "status": "solver_exception",
+                    "steps_completed": int((incumbent or {}).get("steps_completed", len(history))),
+                    "history": history, "checkpoints": checkpoints,
+                    "last_incumbent": incumbent, "selected": None,
+                    "wall_seconds": float(max(0.0, time.monotonic() - seed_started)),
+                    "pre_seed_identity_recheck_seconds": float(identity_seconds),
+                    "failure": {"type": type(seed_exc).__name__,
+                                "message": str(seed_exc), "traceback": seed_traceback},
+                })
+                report["active_seed"] = None
+                report["active_step"] = None
+                report["active_progress_path"] = str(progress_path) if progress_path.exists() else None
+                report["solver_time_spent_seconds"] = float(
+                    sum(row.get("wall_seconds", 0.0) for row in report["seeds"])
+                )
+                report["status"] = "solver_exception"
+                _atomic_json(report_path, report)
+                raise
             elapsed = time.monotonic() - seed_started
             if elapsed > seed_budget:
                 result["status"] = "timeout"
