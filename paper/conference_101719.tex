@@ -1,0 +1,138 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{cite}
+\usepackage{amsmath,amssymb}
+\usepackage{url}
+
+\begin{document}
+\title{A Fixed-Mask Pixelated Illumination Pilot Toward Hotspot-Aware Lithographic Optimization}
+
+\author{\IEEEauthorblockN{1\textsuperscript{st} William de Almeida Pavinato}
+\IEEEauthorblockA{\textit{Centro de Desenvolvimento Tecnológico}\\
+\textit{Universidade Federal de Pelotas}\\
+Pelotas, Brasil\\
+wapavinato@inf.ufpel.edu.br}
+\and
+\IEEEauthorblockN{2\textsuperscript{nd} Daniel Henrique S. P. Barretos}
+\IEEEauthorblockA{\textit{Centro de Desenvolvimento Tecnológico}\\
+\textit{Universidade Federal de Pelotas}\\
+Pelotas, Brasil\\
+dhspbarretos@inf.ufpel.edu.br}
+\and
+\IEEEauthorblockN{3\textsuperscript{rd} Luciano Volcan Agostini}
+\IEEEauthorblockA{\textit{Centro de Desenvolvimento Tecnológico}\\
+\textit{Universidade Federal de Pelotas}\\
+Pelotas, Brasil\\
+\texttt{agostini@inf.ufpel.edu.b}}
+}
+
+\maketitle
+
+\begin{abstract}
+This paper documents an implemented, source-only lithography pilot and separates it from a proposed future joint source--mask optimization (SMO) and Neural-ILT system. The pilot optimizes 49 nonnegative pixelated illumination weights with unit total flux while holding seven FIT layouts fixed. It uses a scalar Abbe fixed-basis model, a dose-weighted sigmoid resist, and a static equal-layout soft objective. The hard process-variation-band (PV-band) area is measured separately from that differentiable objective. In the frozen October 7 run, all five registered seeds rejected their initial jitter and fell back to the same seed-17 reference. Across each 204-step schedule, three updates were accepted (one at each beta) and 201 steps were stationary. No checkpoint qualified under the registered FIT gates, so no candidate was frozen, calibration remained closed, and no final3 layout was indexed or evaluated. These results do not demonstrate a process-window improvement, hotspot detection, generalization, or an official-benchmark evaluation. We report the experiment's scope and baseline metrics, identify its limitations, and outline the prospective validation needed before evaluating a joint SMO--Neural-ILT approach.
+\end{abstract}
+
+\begin{IEEEkeywords}
+computational lithography, illumination-source optimization, source-mask optimization, inverse lithography, process variation
+\end{IEEEkeywords}
+
+\section{Introduction}
+Optical proximity effects make it difficult to transfer a target layout to a wafer with low print error. Computational lithography studies models and optimization methods for this task, including source optimization and inverse lithography \cite{hopkins,neuralilt2}. Public benchmarks such as LithoBench support comparison across lithography and mask-optimization tasks \cite{lithobench}. Such prior work motivates joint approaches, but does not establish that a particular source-only experiment improves printability.
+
+This paper reports a deliberately narrower result: a fixed-mask pilot that varies only the 49 weights of a pixelated illumination source. All seven FIT layouts remain fixed. No mask pixels or neural-network parameters are optimized, and the experiment does not train a hotspot classifier. The registered October 7 run is especially informative about the limits of the current protocol: all five seeds used the same reference after their jittered starts failed the guard audit, and none produced a checkpoint that met the qualification gate.
+
+This pilot is motivated by earlier work in the broader project on Neural-ILT with PV-band heatmap fine-tuning. Joint SMO--Neural-ILT and heatmap-based hotspot analysis remain future work.
+
+\medskip
+\noindent\textbf{Contributions.} This draft:
+\begin{itemize}
+    \item specifies the implemented 49-weight, fixed-mask illumination experiment and distinguishes its differentiable training objective from the hard PV-band metric;
+    \item records the frozen run outcome, including the identical-start fallback, zero qualified checkpoints, and closed calibration boundary; and
+    \item defines the scope of future work needed to test distinct feasible starts, joint mask/source optimization, and external benchmark performance.
+\end{itemize}
+
+\section{Background and Metrics}
+\subsection{Forward Lithography and the Implemented Model}
+Wave-optics models describe the formation of lithographic images under partially coherent illumination; Hopkins' diffraction theory is a foundational treatment \cite{hopkins}. The pilot described here uses a scalar Abbe implementation with a precomputed, fixed source basis. For a fixed mask and basis images $B_j$, its aerial intensity is linear in the source weights:
+\begin{equation}
+ I_{\mathbf{s}}(x,y)=\sum_{j=1}^{49}s_j B_j(x,y),\qquad
+ s_j\geq 0,\qquad \sum_{j=1}^{49}s_j=1.
+ \label{eq:source}
+\end{equation}
+This equation describes the implemented source parameterization; it is not a claim that the complete optical and resist pipeline is linear.
+
+At dose $d$, the implementation applies a sigmoid resist response with steepness $\alpha=50$ and threshold $I_{\mathrm{th}}=0.225$, then thresholds the response at 0.5 to obtain a binary print $Z_{d,\mathbf{s}}$. The dose set is $\mathcal{D}=\{0.98,1.00,1.02\}$, and focus is fixed at zero.
+
+\subsection{Hard PV-Band and Soft Objective}
+For a layout target $T$, the reported hard PV-band area is the number of pixels printed at some but not all tested doses:
+\begin{equation}
+ A_{\mathrm{PV}} =
+ \left|\left(\bigcup_{d\in\mathcal{D}}Z_{d,\mathbf{s}}\right)
+ \setminus
+ \left(\bigcap_{d\in\mathcal{D}}Z_{d,\mathbf{s}}\right)\right|.
+ \label{eq:pv}
+\end{equation}
+Nominal $L_2$ is the number of binary mismatches to $T$ at dose 1.00. Worst-dose $L_2$ is the maximum mismatch count over the three doses. These are pixel counts on the evaluated raster.
+
+Optimization uses the existing differentiable, target-aware critical-corner softcount, averaged with static equal weight over the seven FIT layouts. This soft objective and its associated heatmap are optimization diagnostics; they are not the hard PV-band area in (\ref{eq:pv}), a labeled hotspot map, or a hotspot-classification score. In particular, no hotspot precision, recall, or F1 score is measured in this pilot.
+
+\section{Implemented Pilot}
+\subsection{Source and Layout Scope}
+The pupil is discretized on a $9\times9$ grid in pupil coordinates $(u,v)$. The 49 permitted source points lie in the disk of normalized radius 0.9, including the center and grid points at radii below 0.3. The inner radius 0.3 defines the initial annular illumination profile; it does not restrict the source weights during optimization. The weights satisfy (\ref{eq:source}), so the modeled source has unit total flux. The frozen optical configuration uses NA 1.35, wavelength 193\,nm, a 4\,nm pixel pitch, and a $128\times128$ raster.
+
+The source is the only optimized variable. Four original FIT layouts and three fixed synthetic FIT layouts form the seven-layout objective. Their masks and targets are held constant during optimization. Calibration data were excluded from optimization and selection; the final3 layouts were never indexed or evaluated.
+
+\subsection{Optimization and Qualification}
+The registered solver is a Frank--Wolfe procedure with linear minimization over the guarded source-weight domain. Each seed has 68 steps at each of $\beta=200,400,800$, for 204 scheduled steps. Hard metrics are recorded at registered checkpoints. The objective weights each of the seven layouts equally throughout; there are no dynamic or hotspot-dependent layout weights.
+
+A checkpoint can qualify only if it preserves the original FIT limits (mean PV-band area at most 234.5 pixels, mean nominal $L_2$ equal to zero, and mean worst-dose $L_2$ at most 150.25 pixels), strictly improves the new-three mean PV-band relative to the fixed seed-17 reference, does not worsen the new-three nominal or worst-dose $L_2$ means, has no blank positive target at any tested dose, and passes the registered nominal-polytope and critical-guard audits. Calibration is opened only after all five seeds yield complete, qualified FIT vectors; it is not an optimizer input or tie-breaker.
+
+\section{Experimental Setup}
+The evidence is the frozen October 7 coverage run recorded in \texttt{coverage\_a32222f\_report.json}; its full SHA-256 is listed in the accompanying README. The registered seeds were 17, 29, 43, 71, and 101. For each seed, the initial simplex jitter failed the augmented guard-domain check and the exact seed-17 reference was used. Each seed completed its 204-step schedule, with three accepted updates (one at each beta) and 201 stationary steps.
+
+The report identifies the run status as \texttt{no\_fit\_qualified\_checkpoint}. It records zero qualified checkpoints for every seed, leaves calibration closed, and records the final3 layouts as never indexed or evaluated. Thus, the run did not freeze a qualified source vector and supplies no calibration or final3 result.
+
+\section{Results}
+Table~\ref{tab:reference} reports the original-FIT reference metrics and compares the seed-17 reference with the last FIT checkpoint on the same new-three layouts. The last checkpoint ties the new-three PV-band and worst-dose means and has one additional aggregate nominal mismatch.
+
+\begin{table*}[t]
+\caption{Reference and last FIT-checkpoint metrics. Values are mean pixel counts over layouts in each group.}
+\label{tab:reference}
+\centering
+\begin{tabular}{lrrr}
+\hline
+FIT evaluation & PV-band & Nominal $L_2$ & Worst-dose $L_2$ \\
+\hline
+Original four FIT reference & 234.500 & 0.000 & 150.250 \\
+New three FIT reference & 161.333 & 35.333 & 93.333 \\
+New three FIT, last checkpoint & 161.333 & 35.667 & 93.333 \\
+\hline
+\end{tabular}
+\end{table*}
+
+No optimized checkpoint passed the registered qualification gates. All five seeds shared the same reference start and identical FIT trajectory. Their last FIT checkpoints tied the reference PV-band and worst-dose $L_2$ means but had nominal $L_2$ mean 35.667 rather than 35.333. Across the three new layouts, that mean difference is one additional aggregate nominal mismatch. The result failed the new FIT gate: the PV-band did not strictly improve and nominal $L_2$ worsened. Repeating an optimization from the identical start is not independent evidence of generalization, and a stationary Frank--Wolfe gap is not a certificate of global optimality. Calibration remained closed, and the final3 layouts were never indexed or evaluated.
+
+\section{Limitations and Planned Validation}
+This is a source-only computational pilot on seven fixed FIT layouts. Focus was held at zero while dose varied by $\pm2\%$; consequently, the run does not demonstrate a focus--dose process window. It does not evaluate mask changes, a Neural-ILT model, hotspot labels, hotspot-classification metrics, or an official LithoBench or MaskOpt test set. The differentiable softcount must not be described as a measured hard PV-band or hotspot-detection result.
+
+No final3 result is claimed; those layouts were never indexed or evaluated.
+
+The prospective schema-6 source-only protocol to replace jitter fallback with distinct feasible initializations is now implemented in code and pinned by a new external plan. It awaits final code review and a controlled benchmark run; it has not produced results and provides no evidence for this pilot. Future work will separately test joint source--mask optimization with a Neural-ILT model, define any hotspot target and evaluation metric, and conduct external evaluation on official LithoBench and MaskOpt data \cite{lithobench,maskopt}. Such an evaluation will require a frozen protocol and independent test data; no generalization claim is made here.
+
+\section{Conclusion}
+We documented the implemented scope and frozen outcome of a fixed-mask, 49-weight illumination pilot. The five registered runs shared the same reference initialization, completed their schedules, and yielded no qualified checkpoint. Calibration remained closed, and the final3 layouts were never indexed or evaluated. These results support a reproducible account of the current experiment, not a claim of improved printability, hotspot detection, or generalization. Benchmarking the implemented distinct-start protocol and developing a joint SMO--Neural-ILT pipeline remain prospective work.
+
+\begin{thebibliography}{00}
+\bibitem{hopkins}
+H. H. Hopkins, "On the diffraction theory of optical images," \textit{Proceedings of the Royal Society of London. Series A, Mathematical and Physical Sciences}, vol. 217, no. 1130, pp. 408--432, 1953, doi: 10.1098/rspa.1953.0071.
+
+\bibitem{lithobench}
+S. Zheng, H. Yang, B. Zhu, B. Yu, and M. D. F. Wong, "LithoBench: Benchmarking AI computational lithography for semiconductor manufacturing," in \textit{Advances in Neural Information Processing Systems}, vol. 36, Datasets and Benchmarks Track, 2023, doi: 10.52202/075280-1315. [Online]. Available: \url{https://proceedings.neurips.cc/paper_files/paper/2023/hash/604b9fa9e1c16284e6517d923cf9ff20-Abstract-Datasets_and_Benchmarks.html}
+
+\bibitem{neuralilt2}
+B. Jiang, L. Liu, Y. Ma, B. Yu, and E. F. Y. Young, "Neural-ILT 2.0: Migrating ILT to domain-specific and multitask-enabled neural network," \textit{IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems}, vol. 41, no. 8, pp. 2671--2684, Aug. 2022, doi: 10.1109/TCAD.2021.3109556.
+
+\bibitem{maskopt}
+Y. Hu, L. Zhuang, H. Xiang, J. Xiong, and G.-J. Nam, "MaskOpt: A large-scale mask optimization dataset to advance AI in integrated circuit manufacturing," arXiv:2512.20655, 2025. [Online]. Available: \url{https://arxiv.org/abs/2512.20655}
+\end{thebibliography}
+
+\end{document}

@@ -20,6 +20,60 @@ from scipy import sparse
 
 OBJECTIVE_ID = "target_aware_fit_coverage_softcount_v1"
 PINNED_PLAN_SHA256 = "7b4cbc414bc2b2a6ee72fac3a633e27adb2bcb2b299b1adb79dbfa9cbc3fc6d2"
+PINNED_PLAN_SHA256_V6 = "c6dffeca8919dc8b0299ca6d35b05131b7bc67b8b61d45aba86377c7199915bc"
+PINNED_SUPERSEDED_COVERAGE_REPORT_SHA256 = "263c1bb7e0de8bfcfff133e58a0b1c417f78cb565b9b1c9d4c3fa995cb766320"
+PINNED_SUPERSEDED_COVERAGE_PLAN_SHA256 = PINNED_PLAN_SHA256
+PINNED_FIXED_FIT_LAYOUT_HASHES = [
+    {
+        "layout_id": "fit_coverage_finite_ribbons_v1",
+        "mask_sha256": "359df6231a4f6c430944e5c3e246eeb83b0d738ed57056ee2cf2eb01ae445781",
+        "target_sha256": "8240edd4f8946fb6415c956b2c738457f8d8a42ac3b85eef816b1827839f42bb",
+    },
+    {
+        "layout_id": "fit_coverage_asymmetric_line_ends_v1",
+        "mask_sha256": "d730598006c5dd397b51491244188d68a93d3ed906463bb30294d68ae830648a",
+        "target_sha256": "f3fc4cb7457ce531282a90c9c3156d6df9436ecf1910d37acdccbce13bffa83c",
+    },
+    {
+        "layout_id": "fit_coverage_irregular_contacts_v1",
+        "mask_sha256": "593d63a7aaad61597634dba821cf52fd70316b5faeb48bcc762a8f9cba5357f8",
+        "target_sha256": "ab63be0ee7a87e91319d15cbd2306c3acc04813b718e755530ebbe4e4e2161f5",
+    },
+]
+SCHEMA6_BASE_COMMIT = "a32222f24f6514d723236927971256ed6c3e1d98"
+SCHEMA6_INITIALIZATION_PROTOCOL = {
+    "algorithm": "seeded random linear minimization vertices mixed with the seed17 reference",
+    "random_generator": "numpy.default_rng(seed); standard_normal(49); normalize each direction by its L2 norm",
+    "lmo_direction_objective": "minimize the normalized direction over the guarded source domain",
+    "maximum_lmo_directions_per_seed": 8,
+    "mixing_alphas": [0.5, 0.25, 0.125],
+    "candidate_order": "direction order, then alpha order; first candidate passing every audit and distinctness check",
+    "minimum_l1_distance": 1e-4,
+    "distinctness": "candidate hash must be new and L1 distance must exceed the minimum from the seed17 reference and every previously accepted start",
+    "candidate_audits": [
+        "full augmented guarded source domain",
+        "full original nominal q polytope",
+        "float32 critical guard audit",
+    ],
+    "start_selection": "feasibility and registered distinctness only; no image metric or loss ranking",
+    "failure_policy": "no reference fallback; fail closed when the bounded search finds no distinct audited start",
+    "maximum_initialization_seconds_per_seed": 60.0,
+    "lmo_time_limit": "remaining initialization deadline, capped at 60 seconds per LMO",
+    "budget_accounting": "initialization and diagnostics count inside the existing 360-second seed and 1800-second total budgets",
+}
+SCHEMA6_DIAGNOSTICS_PROTOCOL = {
+    "snapshots": [
+        "initial_beta_200",
+        "transition_beta_400",
+        "transition_beta_800",
+        "final_beta_800",
+    ],
+    "per_layout_fields": ["softcount_loss", "gradient", "gradient_l2_norm"],
+    "mean_parity_absolute_tolerance": 1e-10,
+    "parity_check": "arithmetic mean of per-layout losses and gradients equals the existing seven-layout aggregate",
+    "budget_accounting": "all aggregate and per-layout evaluations count inside the seed and total solver deadlines",
+    "optimizer_or_ranking_influence": False,
+}
 PINNED_PREVIOUS_REPORT_SHA256 = "984dd65885ffc66b4eff3a70b4b8a81707841a777e8dd33ede9fe356daa5eb44"
 PINNED_PREVIOUS_PLAN_SHA256 = "8a3b00d1b9ab073454598994e92cdca3564a34fd3c412414d2e85caa9221a6a6"
 PINNED_SOURCE_MANIFEST_SHA256 = "50e0b813e0f2db7e42deb2b901417e130f5c0a935f7a469c4f8e37bb3718d343"
@@ -71,7 +125,7 @@ def read_hashed_bytes(path: str | Path) -> tuple[bytes, str]:
     return raw, hashlib.sha256(raw).hexdigest()
 
 
-def validate_plan_payload(plan: dict) -> None:
+def _validate_schema5_plan_payload(plan: dict) -> None:
     """Fail closed on any change to the externally frozen schema-5 protocol."""
     if not isinstance(plan, dict):
         raise ValueError("coverage plan must be an object")
@@ -204,11 +258,147 @@ def validate_plan_payload(plan: dict) -> None:
         raise ValueError("coverage plan completion policy changed")
 
 
+def _validate_schema6_plan_payload(plan: dict) -> None:
+    if not isinstance(plan, dict):
+        raise ValueError("coverage plan must be an object")
+    added_fields = {
+        "superseded_coverage_attempt", "fixed_fit_layout_hashes",
+        "initialization_protocol", "diagnostics_protocol",
+    }
+    expected_fields = {
+        "schema_version", "status", "created_utc", "objective_id", "base_commit",
+        "dataset_file", "diagnostic_file", "prerequisite_manifest", "previous_report",
+        "previous_plan", "input_hashes", "scope", "physical", "protocol",
+        "new_fit_generation", "completion",
+    } | added_fields
+    if set(plan) != expected_fields:
+        raise ValueError("coverage plan fields differ from the frozen schema-6 contract")
+    if (plan.get("schema_version") != 6
+            or plan.get("status") != "prospective_candidate_plan"
+            or plan.get("objective_id") != OBJECTIVE_ID
+            or plan.get("base_commit") != SCHEMA6_BASE_COMMIT):
+        raise ValueError("coverage plan schema/status/objective/base commit differs from schema 6")
+    superseded = plan.get("superseded_coverage_attempt")
+    expected_superseded = {
+        "status": "no_fit_qualified_checkpoint",
+        "plan_path": "/home/daniel/experiments/robust-source-quality-20261005-766872/coverage_candidate_plan_7b4cbc4.json",
+        "plan_sha256": PINNED_SUPERSEDED_COVERAGE_PLAN_SHA256,
+        "report_path": "/home/daniel/experiments/robust-source-quality-20261005-766872/coverage-runs/20261007T035331Z_64bed05d/coverage_report.json",
+        "report_sha256": PINNED_SUPERSEDED_COVERAGE_REPORT_SHA256,
+    }
+    if superseded != expected_superseded:
+        raise ValueError("schema-6 plan does not preserve the consumed schema-5 coverage attempt")
+    if plan.get("fixed_fit_layout_hashes") != PINNED_FIXED_FIT_LAYOUT_HASHES:
+        raise ValueError("schema-6 fixed FIT mask/target hashes differ from the consumed attempt")
+    if plan.get("initialization_protocol") != SCHEMA6_INITIALIZATION_PROTOCOL:
+        raise ValueError("schema-6 feasible-start protocol differs from its frozen values")
+    if plan.get("diagnostics_protocol") != SCHEMA6_DIAGNOSTICS_PROTOCOL:
+        raise ValueError("schema-6 per-layout diagnostic protocol differs from its frozen values")
+
+    # Reuse the complete schema-5 checks for all inherited physics, objective,
+    # lineage, gates, fixed layouts, and completion policy. Only the starting
+    # rule and the code base commit are intentionally new in schema 6.
+    inherited = dict(plan)
+    for key in added_fields:
+        inherited.pop(key)
+    inherited["schema_version"] = 5
+    inherited["base_commit"] = "7483c1e7c8003f3e2f61caa6324a30d0662a8121"
+    inherited_protocol = dict(plan.get("protocol", {}))
+    inherited_protocol["initial_simplex_jitter"] = 1e-4
+    inherited_protocol["fallback_if_guard_infeasible"] = (
+        "exact previous FIT-only seed17 reference; record fallback"
+    )
+    inherited["protocol"] = inherited_protocol
+    _validate_schema5_plan_payload(inherited)
+
+    protocol = plan.get("protocol")
+    if (protocol.get("initial_simplex_jitter") != 0.0
+            or protocol.get("fallback_if_guard_infeasible")
+            != "no fallback; fail closed after registered feasible-start search"):
+        raise ValueError("schema-6 plan must disable jitter and reference fallback")
+
+
+def validate_superseded_coverage_report(report: dict, expected_plan_sha256: str) -> None:
+    """Validate only the FIT/attempt boundary of the consumed schema-5 report.
+
+    Deliberately does not inspect a calibration result or any calibration metrics.
+    """
+    if (not isinstance(report, dict)
+            or report.get("schema_version") != 1
+            or report.get("objective_id") != OBJECTIVE_ID
+            or report.get("status") != "no_fit_qualified_checkpoint"
+            or report.get("plan_sha256") != expected_plan_sha256
+            or report.get("coverage_attempt_consumed") is not True
+            or report.get("calibration_status") != "closed"
+            or report.get("final3_status") != "never indexed or evaluated"):
+        raise ValueError("superseded schema-5 coverage report is not the closed failed FIT attempt")
+    observed_layouts = report.get("new_fit_layouts")
+    if (not isinstance(observed_layouts, list)
+            or any(not isinstance(row, dict) for row in observed_layouts)):
+        raise ValueError("superseded coverage report lacks well-formed fixed FIT layout identities")
+    observed_hashes = [
+        {key: row.get(key) for key in ("layout_id", "mask_sha256", "target_sha256")}
+        for row in observed_layouts
+    ]
+    if observed_hashes != PINNED_FIXED_FIT_LAYOUT_HASHES:
+        raise ValueError("superseded coverage report FIT mask/target hashes differ from schema 6")
+    seeds = report.get("seeds")
+    if not isinstance(seeds, list) or len(seeds) != len(SEEDS):
+        raise ValueError("superseded coverage report does not contain all five seeds")
+    fallback_hashes = []
+    for seed, row in zip(SEEDS, seeds):
+        if not isinstance(row, dict):
+            raise ValueError("superseded coverage report seed history is malformed")
+        initialization = row.get("initialization")
+        last_incumbent = row.get("last_incumbent")
+        rejected_jitter = (initialization.get("rejected_jitter_check")
+                           if isinstance(initialization, dict) else None)
+        reference_check = initialization.get("check") if isinstance(initialization, dict) else None
+        final_weights_sha = (last_incumbent.get("weights_sha256")
+                             if isinstance(last_incumbent, dict) else None)
+        if (row.get("seed") != seed
+                or row.get("status") != "complete"
+                or row.get("steps_completed") != STEPS_PER_SEED
+                or not isinstance(initialization, dict)
+                or initialization.get("fallback") is not True
+                or initialization.get("used_jitter") is not False
+                or not isinstance(rejected_jitter, dict)
+                or rejected_jitter.get("passed") is not False
+                or not isinstance(reference_check, dict)
+                or reference_check.get("passed") is not True
+                or row.get("qualified_checkpoint_count") != 0
+                or row.get("selected") is not None
+                or not isinstance(final_weights_sha, str) or len(final_weights_sha) != 64):
+            raise ValueError("superseded coverage report seed history differs from the consumed attempt")
+        fallback_hashes.append(final_weights_sha)
+    if len(set(fallback_hashes)) != 1:
+        raise ValueError("superseded coverage report seeds did not share the reference fallback")
+
+
+def validate_plan_payload(plan: dict) -> None:
+    """Dispatch the immutable v5 protocol or the separately pinned v6 protocol."""
+    if not isinstance(plan, dict):
+        raise ValueError("coverage plan must be an object")
+    if plan.get("schema_version") == 5:
+        _validate_schema5_plan_payload(plan)
+    elif plan.get("schema_version") == 6:
+        _validate_schema6_plan_payload(plan)
+    else:
+        raise ValueError("coverage plan schema version is not registered")
+
+
 def validate_plan_file(path: str | Path, expected_sha256: str) -> tuple[dict, str]:
     raw, actual_sha = read_hashed_bytes(path)
     expected = str(expected_sha256).lower()
-    if expected != PINNED_PLAN_SHA256 or actual_sha != PINNED_PLAN_SHA256:
-        raise ValueError("plan SHA256 does not match the required frozen plan pin")
+    # Keep every non-v6 request on the original schema-5 pin/error path.
+    if expected != PINNED_PLAN_SHA256_V6:
+        if expected != PINNED_PLAN_SHA256 or actual_sha != PINNED_PLAN_SHA256:
+            raise ValueError("plan SHA256 does not match the required frozen plan pin")
+        plan = json.loads(raw.decode("utf-8"))
+        _validate_schema5_plan_payload(plan)
+        return plan, actual_sha
+    if actual_sha != PINNED_PLAN_SHA256_V6:
+        raise ValueError("plan SHA256 does not match the required frozen schema-6 plan pin")
     plan = json.loads(raw.decode("utf-8"))
     validate_plan_payload(plan)
     return plan, actual_sha

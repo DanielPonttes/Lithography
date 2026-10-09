@@ -1,10 +1,22 @@
 # FIT source coverage experiment
 
-This prospective experiment optimizes the same 49 supported light-source weights against seven fixed FIT layouts: the four original FIT layouts and three independently generated coverage layouts. It keeps masks fixed during optimization and uses static equal weighting across layouts. It does not use MRC, dynamic hotspot weights, calibration in the loss or ranking, or held-out data. The frozen schema-5 plan is stored outside the repository and pinned by SHA256 in the runner.
+This prospective experiment optimizes the same 49 supported light-source weights against seven fixed FIT layouts: the four original FIT layouts and three independently generated coverage layouts. It keeps masks fixed during optimization and uses static equal weighting across layouts. It does not use MRC, dynamic hotspot weights, calibration in the loss or ranking, or final3 data. The consumed schema-5 attempt remains immutable; schema 6 is a new prospective attempt with separately pinned external plan and report lineage.
 
 ## Objective and solver
 
-The objective is the existing target-aware critical-corner softcount averaged equally over all seven FIT layouts. The fixed beta schedule is 200, 400, and 800 with 68 Frank–Wolfe steps at each beta. Five registered starts use seeds 17, 29, 43, 71, and 101. Each starts from deterministic simplex jitter of the frozen seed-17 reference; if the jitter violates the guard domain, the exact reference is used and the fallback is recorded. This is a fixed 204-step procedure per seed, with no claim of global optimality.
+The objective is the existing target-aware critical-corner softcount averaged equally over all seven FIT layouts. The fixed beta schedule is 200, 400, and 800 with 68 Frank–Wolfe steps at each beta. Five registered starts use seeds 17, 29, 43, 71, and 101. The consumed schema-5 attempt used deterministic simplex jitter and, after guard failure, fell back to the seed-17 reference for all five seeds. That run completed 204 steps per seed without a qualified checkpoint; repeated starts therefore did not provide independent evidence.
+
+The 49 source samples are the disk support of the pixelated source, defined by radius at most `sigma_outer = 0.9`; this includes the center and points inside `sigma_inner = 0.3`. The inner sigma parameter defines the initial annular illumination profile, not a restriction on which of the 49 weights may be optimized.
+
+Schema 6 replaces only start construction and adds diagnostics. It keeps the same masks, guards, physics, objective, seed list, step schedule, qualification gates, teacher, and geometry. The fixed FIT mask and target hashes must match the consumed attempt before new bases are prepared.
+
+For each seed, schema 6 draws up to eight 49-dimensional standard-normal directions from `numpy.default_rng(seed)`, normalizes each by its L2 norm, and minimizes that direction over the guarded source domain with the existing LMO. It tests convex mixtures with the seed-17 reference in the fixed alpha order 0.5, 0.25, 0.125. It accepts the first candidate that passes the guarded-domain check, the full original nominal-q polytope, and the float32 critical-guard audit, and whose source-vector hash is new and L1 distance exceeds 1e-4 from the reference and every earlier accepted start. This search uses feasibility and registered distinctness only; image metrics and loss values do not rank starts. If no candidate passes within eight LMO directions or the 60-second per-seed initialization budget, the seed fails closed without reference fallback.
+
+Initialization and diagnostics count inside the existing 360-second seed and 1,800-second total budgets. Schema 6 records per-layout softcount loss, 49-vector gradient, and gradient norm at the initial beta 200 point, the beta 400 and 800 transitions, and the final beta 800 point. At each snapshot the arithmetic mean of the seven layout values and gradients must match the aggregate objective within absolute tolerance 1e-10. These diagnostics do not affect updates, checkpoint qualification, or ranking.
+
+## Consumed schema-5 attempt
+
+The schema-5 run is closed and consumed. Each of the five seeds completed 204 steps, with three accepted updates total (one in each beta phase) and 201 stationary Frank–Wolfe iterations distributed across the schedule. There were zero qualified checkpoints. Every seed fell back to the same seed-17 reference. Its original FIT mean was PV-band 234.5, nominal L2 0, and worst-dose L2 150.25. The three new FIT layouts at the fixed reference had mean PV-band 161.333333, nominal L2 35.333333, and worst-dose L2 93.333333. The last FIT checkpoint had PV-band 161.333333 and worst-dose L2 93.333333, while nominal L2 was 35.666667, one aggregate nominal pixel above the reference. It did not qualify. These repeated starts are one computational experiment, not independent observations.
 
 Hard-metric checkpoints are recorded after steps 25, 50, 68, 75, 100, 125, 136, 150, 175, 200, and 204. Every iteration stores its loss gradient, LMO vertex and objective, post-step 49-vector and SHA256, and step status. The current vector, partial history, and checkpoints are atomically written during the run. A seed has a 360-second solver budget; the five seeds share an 1,800-second solver budget. Original-data validation and identity checks before each seed are recorded outside that solver budget. Solver iterations and progress writes count against it.
 
@@ -22,7 +34,7 @@ The original synthetic teacher uses the frozen 193 nm, NA 1.35, 4 nm pixel, 128 
 
 The full original nominal-q polytope is checked for each candidate. The LMO uses exact sparse pruning: simplex vertex bounds certify redundant rows; a same-pixel LP-anchor critical protection at epsilon `2e-6` certifies stronger nominal margins. Counts and digests record both pruning maps. Reference critical guards that overlap those same anchor protections are also removed by exact same-row dominance. There is no row quantization or approximate merging.
 
-The original LP-anchor critical protections and original FIT qualification remain fixed. Reference and new-layout guard floors are positive and capped by half their reference margin. New guards use deterministic row-major samples of at most 128 target-positive and 128 target-negative pixels per new layout, retaining only reference-correct pixels. The seed-17 reference must be feasible in the augmented domain; LP-anchor feasibility under added reference/new guards is recorded as diagnostic metadata. Pixelwise float32 audits use the same contraction order as the legacy hard-print path and check anchor/reference critical-correct pixels plus sampled new guards.
+The original LP-anchor critical protections and original FIT qualification remain fixed. Reference and new-layout guard floors are positive and capped by half their reference margin. New guards use deterministic row-major samples of at most 128 target-positive and 128 target-negative pixels per new layout, retaining only reference-correct pixels. The seed-17 reference must be feasible in the augmented domain; LP-anchor feasibility under added reference/new guards is recorded as diagnostic metadata. Pixelwise float32 audits use the same contraction order as the legacy hard-print path and check anchor/reference critical-correct pixels plus sampled new guards. Schema-6 starts must also pass the full original nominal-q audit, which is deliberately not pruned.
 
 A checkpoint qualifies only if it preserves the original FIT gates: mean hard PV-band at most 234.5, mean nominal L2 zero, and mean worst-dose L2 at most 150.25. It must also strictly reduce the new-three mean hard PV-band versus the fixed seed-17 reference, keep the new-three nominal and worst-dose L2 means no higher than that reference, pass the full original polytope and guard checks, pass the float32 guard audit, and have no blank positive target at any dose.
 
@@ -30,7 +42,7 @@ Qualified checkpoints rank by new-three mean hard PV-band, new-three mean worst-
 
 ## Inputs, identity, and one-use boundary
 
-The runner parses each JSON from the same bytes whose SHA256 it records and deserializes the dataset from the already-hashed bytes with `weights_only=True`. It indexes only `payload["fit"]`; the held-out split is never selected or evaluated. FIT mask/target hashes, ordered IDs, pixel size and raster are checked against diagnostic metadata. Every original float32 basis is checked against its diagnostic hash, shape, dtype, and direct simulator/basis parity.
+The runner parses each JSON from the same bytes whose SHA256 it records and deserializes the dataset from the already-hashed bytes with `weights_only=True`. It indexes only `payload["fit"]`; final3 is never indexed or evaluated. FIT mask/target hashes, ordered IDs, pixel size and raster are checked against diagnostic metadata. Every original float32 basis is checked against its diagnostic hash, shape, dtype, and direct simulator/basis parity. Schema 6 also rechecks the consumed schema-5 plan and closed failed-FIT report by pinned SHA256, validating FIT attempt state without using calibration metrics.
 
 The historical lineage parity comes from the pinned predecessor report and is validated separately from fresh direct parity checks. The read-only prerequisite-manifest validator verifies all 14 lineage artifacts. Their byte hashes, along with the plan, data, diagnostic, predecessor report/plan, and clean committed source identity, are rechecked before the marker and around each seed/calibration boundary.
 
@@ -57,8 +69,25 @@ python scripts/optimize_source_coverage.py `
   --output-root "<absolute-output-directory-outside-repository>"
 ```
 
+The commands above document the consumed schema-5 attempt; do not rerun that plan. For the next controlled attempt, after schema-6 code is reviewed and committed cleanly on the CUDA host, use the new prospective plan in the same parent directory as the prerequisite manifest:
+
+```powershell
+python scripts/optimize_source_coverage.py `
+  --mode preflight `
+  --plan-file "/home/daniel/experiments/robust-source-quality-20261005-766872/feasible_starts_candidate_plan.json" `
+  --expected-plan-sha256 c6dffeca8919dc8b0299ca6d35b05131b7bc67b8b61d45aba86377c7199915bc `
+  --expected-previous-sha256 984dd65885ffc66b4eff3a70b4b8a81707841a777e8dd33ede9fe356daa5eb44
+
+python scripts/optimize_source_coverage.py `
+  --mode run `
+  --plan-file "/home/daniel/experiments/robust-source-quality-20261005-766872/feasible_starts_candidate_plan.json" `
+  --expected-plan-sha256 c6dffeca8919dc8b0299ca6d35b05131b7bc67b8b61d45aba86377c7199915bc `
+  --expected-previous-sha256 984dd65885ffc66b4eff3a70b4b8a81707841a777e8dd33ede9fe356daa5eb44 `
+  --output-root "<absolute-output-directory-outside-repository>"
+```
+
 The unit tests use only small synthetic arrays and fixture metadata. They do not load the dataset, generate teacher targets, prepare optical bases, or score calibration.
 
 ## Limits of interpretation
 
-Frank–Wolfe optimizes a nonconvex surrogate with registered computational restarts; neither the reported gap nor a qualified checkpoint is a global-optimum certificate. The five seeds are restarts, not independent generalization trials; guard-infeasible jitter can make them converge from the same seed-17 warm start. The reused calibration set is development data and does not demonstrate generalization. No result from this experiment is valid unless the complete identity and original gates pass.
+Frank–Wolfe optimizes a nonconvex surrogate with registered computational restarts; neither the reported gap nor a qualified checkpoint is a global-optimum certificate. The five seeds are computational restarts, not independent generalization trials. The consumed schema-5 report records five identical reference fallbacks, no qualified checkpoint, and calibration closed. Schema 6 has not been run, so the feasible-start procedure and its diagnostic parity remain to be verified in the next controlled attempt. The reused calibration set is development data and does not demonstrate generalization. No result from this experiment is valid unless the complete identity and original gates pass.

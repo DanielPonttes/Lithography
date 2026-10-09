@@ -1,8 +1,8 @@
 """Prospective source-only FIT coverage experiment.
 
 The runner is intentionally separate from the legacy optimization scripts.
-It requires the externally frozen schema-5 plan and does not touch dataset or
-optical inputs until the explicit ``--run`` mode is selected.
+It requires an externally frozen schema-5 or schema-6 plan and does not touch
+dataset or optical inputs until the explicit ``--run`` mode is selected.
 """
 from __future__ import annotations
 
@@ -130,8 +130,41 @@ def _validate_identities(plan_path: Path, plan_sha: str, previous_sha: str,
     if actual_previous_plan_sha != coverage.PINNED_PREVIOUS_PLAN_SHA256:
         raise ValueError("previous Pareto plan no longer matches the required SHA256")
     previous = coverage.validate_previous_report(previous_report)
+    superseded_identity = None
+    if plan.get("schema_version") == 6:
+        superseded = plan["superseded_coverage_attempt"]
+        superseded_plan_path = _absolute_file(
+            superseded["plan_path"], "superseded_coverage_attempt.plan_path",
+        )
+        superseded_report_path = _absolute_file(
+            superseded["report_path"], "superseded_coverage_attempt.report_path",
+        )
+        superseded_plan, superseded_plan_sha = coverage.validate_plan_file(
+            superseded_plan_path, coverage.PINNED_SUPERSEDED_COVERAGE_PLAN_SHA256,
+        )
+        if superseded_plan.get("schema_version") != 5:
+            raise ValueError("superseded coverage plan is not the consumed schema-5 plan")
+        superseded_report, _superseded_report_bytes, superseded_report_sha = _read_hashed_json(
+            superseded_report_path
+        )
+        if superseded_report_sha != coverage.PINNED_SUPERSEDED_COVERAGE_REPORT_SHA256:
+            raise ValueError("superseded coverage report no longer matches its pinned SHA256")
+        coverage.validate_superseded_coverage_report(
+            superseded_report, coverage.PINNED_SUPERSEDED_COVERAGE_PLAN_SHA256,
+        )
+        superseded_identity = {
+            "plan_sha256": coverage.PINNED_SUPERSEDED_COVERAGE_PLAN_SHA256,
+            "report_sha256": coverage.PINNED_SUPERSEDED_COVERAGE_REPORT_SHA256,
+        }
     source_identity = coverage.verify_clean_source_commit(ROOT, _source_paths())
     _verify_git_ancestor(ROOT, plan["base_commit"])
+    input_identity = {
+        **actual_input_hashes,
+        "previous_report_sha256": actual_previous_report_sha,
+        "previous_plan_sha256": actual_previous_plan_sha,
+    }
+    if superseded_identity is not None:
+        input_identity["superseded_coverage_attempt"] = superseded_identity
     return {
         "dataset_path": str(path_map["dataset_sha256"]),
         "dataset_bytes": raws["dataset_sha256"],
@@ -141,9 +174,7 @@ def _validate_identities(plan_path: Path, plan_sha: str, previous_sha: str,
         "manifest": manifest,
         "previous_report_path": str(previous_path),
         "previous_plan_path": str(previous_plan_path),
-        "input_identity": {**actual_input_hashes,
-            "previous_report_sha256": actual_previous_report_sha,
-            "previous_plan_sha256": actual_previous_plan_sha},
+        "input_identity": input_identity,
         "previous_weights": previous, "previous_report": previous_report,
         "previous_report_bytes": previous_report_bytes,
         "source_identity": source_identity, "lineage_artifacts": None,
@@ -439,6 +470,299 @@ def _initial_weights(reference, seed, domain):
                               "rejected_jitter_check": check, "check": ref_check}
 
 
+def _initial_feasible_weights(reference, seed, domain, candidate_auditor,
+                              previous_starts, deadline, protocol=None,
+                              progress_callback=None):
+    """Find the first distinct audited convex mixture from seeded feasible LMO vertices."""
+    protocol = protocol or coverage.SCHEMA6_INITIALIZATION_PROTOCOL
+    reference = np.asarray(reference, dtype=np.float64).reshape(-1)
+    rng = np.random.default_rng(int(seed))
+    previous = [np.asarray(value, dtype=np.float64).reshape(-1)
+                for value in (previous_starts or [])]
+    previous_hashes = {
+        coverage.sha256_array(np.asarray(value, dtype="<f8")) for value in previous
+    }
+    record = {
+        "algorithm": "schema6_seeded_feasible_lmo_mixtures",
+        "seed": int(seed), "status": "searching", "fallback": False,
+        "used_jitter": False, "reference_weights_sha256": coverage.sha256_array(
+            np.asarray(reference, dtype="<f8")
+        ),
+        "prior_start_count": len(previous), "prior_start_hashes": sorted(previous_hashes),
+        "minimum_l1_distance": float(protocol["minimum_l1_distance"]),
+        "directions": [], "directions_attempted": 0, "lmo_solves": 0,
+        "started_monotonic": float(time.monotonic()),
+        "initialization_budget_seconds": float(protocol["maximum_initialization_seconds_per_seed"]),
+    }
+    min_distance = float(protocol["minimum_l1_distance"])
+    max_directions = int(protocol["maximum_lmo_directions_per_seed"])
+    alphas = tuple(float(value) for value in protocol["mixing_alphas"])
+    reference_hash = record["reference_weights_sha256"]
+
+    def notify(event: str, details: dict | None = None) -> None:
+        record["elapsed_seconds"] = float(max(0.0, time.monotonic() - record["started_monotonic"]))
+        record["last_event"] = event
+        if details is not None:
+            record["last_event_details"] = details
+        if progress_callback is not None:
+            progress_callback(record)
+
+    for direction_index in range(1, max_directions + 1):
+        if time.monotonic() >= deadline:
+            record["status"] = "timeout"
+            record["failure_reason"] = "initialization_deadline_before_lmo"
+            notify("deadline_before_direction", {"direction_index": direction_index})
+            break
+        direction = np.asarray(rng.normal(size=reference.shape), dtype=np.float64)
+        direction_norm = float(np.linalg.norm(direction))
+        if not math.isfinite(direction_norm) or direction_norm <= 0.0:
+            record["status"] = "direction_generation_failure"
+            record["failure_reason"] = "random_direction_has_invalid_l2_norm"
+            notify("invalid_random_direction", {"direction_index": direction_index})
+            break
+        direction /= direction_norm
+        direction_row = {
+            "direction_index": direction_index,
+            "elapsed_before_direction_seconds": float(
+                max(0.0, time.monotonic() - record["started_monotonic"])
+            ),
+            "objective": direction.tolist(),
+            "objective_sha256": coverage.sha256_array(np.asarray(direction, dtype="<f8")),
+            "objective_l2_norm": float(np.linalg.norm(direction)),
+            "lmo_status": "pending", "candidates": [],
+        }
+        record["directions_attempted"] = direction_index
+        record["lmo_solves"] += 1
+        lmo_started = time.monotonic()
+        try:
+            lmo = _linprog_lmo(domain, direction, deadline)
+        except Exception as exc:
+            direction_row["lmo_elapsed_seconds"] = float(
+                max(0.0, time.monotonic() - lmo_started)
+            )
+            direction_row.update({
+                "lmo_status": "exception",
+                "lmo_failure": {"type": type(exc).__name__, "message": str(exc)},
+            })
+            record["directions"].append(direction_row)
+            record["status"] = "lmo_failure"
+            record["failure_reason"] = "lmo_exception"
+            notify("lmo_exception", {"direction_index": direction_index})
+            break
+        direction_row["lmo_elapsed_seconds"] = float(
+            max(0.0, time.monotonic() - lmo_started)
+        )
+        direction_row["lmo_status"] = lmo.get("status")
+        direction_row["lmo_record"] = lmo.get("record")
+        direction_row["lmo_residual"] = lmo.get("residual")
+        direction_row["lmo_objective_value"] = lmo.get("objective_value")
+        if lmo.get("weights") is not None:
+            vertex = np.asarray(lmo["weights"], dtype=np.float64).reshape(-1)
+            direction_row["lmo_vertex"] = vertex.tolist()
+            direction_row["lmo_vertex_sha256"] = coverage.sha256_array(
+                np.asarray(vertex, dtype="<f8")
+            )
+        else:
+            vertex = None
+        if lmo.get("status") != "optimal_verified" or vertex is None:
+            record["directions"].append(direction_row)
+            record["status"] = "timeout" if lmo.get("status") == "deadline" else "lmo_failure"
+            record["failure_reason"] = "lmo_" + str(lmo.get("status"))
+            notify("lmo_failed", {"direction_index": direction_index})
+            break
+
+        for alpha in alphas:
+            if time.monotonic() >= deadline:
+                direction_row["candidates"].append({
+                    "alpha": alpha, "status": "timeout_before_candidate_audit",
+                })
+                record["directions"].append(direction_row)
+                record["status"] = "timeout"
+                record["failure_reason"] = "initialization_deadline_during_candidate_search"
+                notify("deadline_during_candidate_search", {
+                    "direction_index": direction_index, "alpha": alpha,
+                })
+                return None, record
+            candidate = reference + alpha * (vertex - reference)
+            candidate = np.asarray(candidate, dtype=np.float64)
+            candidate_hash = coverage.sha256_array(np.asarray(candidate, dtype="<f8"))
+            distances = [{"role": "seed17_reference", "l1": float(np.abs(candidate - reference).sum())}]
+            distances.extend({"role": "previous_start_%d" % index,
+                              "l1": float(np.abs(candidate - value).sum())}
+                             for index, value in enumerate(previous))
+            distinct = candidate_hash != reference_hash and candidate_hash not in previous_hashes
+            distinct = distinct and all(item["l1"] > min_distance for item in distances)
+            audit_started = time.monotonic()
+            try:
+                audits = candidate_auditor(candidate)
+            except Exception as exc:
+                audits = {"passed": False, "audit_exception": {
+                    "type": type(exc).__name__, "message": str(exc),
+                }}
+            if audits.get("deadline_exhausted"):
+                direction_row["candidates"].append({
+                    "alpha": alpha, "weights": candidate.tolist(),
+                    "weights_sha256": candidate_hash, "l1_distances": distances,
+                    "audit_elapsed_seconds": float(max(0.0, time.monotonic() - audit_started)),
+                    "elapsed_seconds": float(max(0.0, time.monotonic() - record["started_monotonic"])),
+                    "distinct": bool(distinct), "audits": audits,
+                    "status": "timeout_during_candidate_audit",
+                })
+                record["directions"].append(direction_row)
+                record["status"] = "timeout"
+                record["failure_reason"] = "initialization_deadline_during_candidate_audit"
+                notify("deadline_during_candidate_audit", {
+                    "direction_index": direction_index, "alpha": alpha,
+                })
+                record.pop("started_monotonic", None)
+                return None, record
+            if time.monotonic() >= deadline:
+                direction_row["candidates"].append({
+                    "alpha": alpha, "weights": candidate.tolist(),
+                    "weights_sha256": candidate_hash, "l1_distances": distances,
+                    "audit_elapsed_seconds": float(max(0.0, time.monotonic() - audit_started)),
+                    "elapsed_seconds": float(max(0.0, time.monotonic() - record["started_monotonic"])),
+                    "distinct": bool(distinct), "audits": audits,
+                    "status": "timeout_after_candidate_audit",
+                })
+                record["directions"].append(direction_row)
+                record["status"] = "timeout"
+                record["failure_reason"] = "initialization_deadline_after_candidate_audit"
+                notify("deadline_after_candidate_audit", {
+                    "direction_index": direction_index, "alpha": alpha,
+                })
+                record.pop("started_monotonic", None)
+                return None, record
+            feasible = bool(audits.get("passed"))
+            accepted = bool(feasible and distinct)
+            candidate_row = {
+                "alpha": alpha, "weights": candidate.tolist(),
+                "weights_sha256": candidate_hash, "l1_distances": distances,
+                "audit_elapsed_seconds": float(max(0.0, time.monotonic() - audit_started)),
+                "elapsed_seconds": float(max(0.0, time.monotonic() - record["started_monotonic"])),
+                "distinct": bool(distinct), "audits": audits,
+                "status": "accepted" if accepted else (
+                    "rejected_infeasible" if not feasible else "rejected_not_distinct"
+                ),
+            }
+            direction_row["candidates"].append(candidate_row)
+            if accepted:
+                direction_row["selected_alpha"] = alpha
+                record["directions"].append(direction_row)
+                record.update({
+                    "status": "feasible_start_found",
+                    "selected_direction_index": direction_index,
+                    "selected_alpha": alpha,
+                    "weights": candidate.tolist(),
+                    "weights_sha256": candidate_hash,
+                    "accepted_audits": audits,
+                })
+                notify("feasible_start_found", {
+                    "direction_index": direction_index,
+                    "alpha": alpha, "weights_sha256": candidate_hash,
+                })
+                if time.monotonic() >= deadline:
+                    record["status"] = "timeout"
+                    record["failure_reason"] = "initialization_deadline_during_start_recording"
+                    notify("deadline_during_start_recording", {
+                        "direction_index": direction_index, "alpha": alpha,
+                    })
+                    record.pop("started_monotonic", None)
+                    return None, record
+                record.pop("started_monotonic", None)
+                return candidate, record
+            notify("candidate_rejected", {
+                "direction_index": direction_index, "alpha": alpha,
+                "status": candidate_row["status"],
+            })
+        else:
+            record["directions"].append(direction_row)
+            continue
+        break
+
+    if record["status"] == "searching":
+        record["status"] = "no_distinct_feasible_start"
+        record["failure_reason"] = "registered_lmo_direction_budget_exhausted"
+    notify("initialization_failed", {"status": record["status"]})
+    record.pop("started_monotonic", None)
+    return None, record
+
+
+def _per_layout_objective_diagnostics(weights, rows, bases_torch, targets_torch,
+                                      beta, snapshot_id, deadline, progress_callback=None):
+    """Record per-layout losses/gradients and assert parity with the equal-weight objective."""
+    layout_ids = [row["layout_id"] for row in rows]
+    record = {
+        "snapshot": snapshot_id, "beta": float(beta), "status": "in_progress",
+        "layout_ids": layout_ids, "per_layout": [],
+        "parity_tolerance": 1e-10,
+    }
+
+    def notify() -> None:
+        if progress_callback is not None:
+            progress_callback(record)
+
+    if time.monotonic() >= deadline:
+        record["status"] = "timeout"
+        record["failure_reason"] = "deadline_before_aggregate_diagnostic"
+        notify()
+        return record
+    all_bases = {key: bases_torch[key] for key in layout_ids}
+    all_targets = {key: targets_torch[key] for key in layout_ids}
+    aggregate_loss, aggregate_gradient = critical_corner_softcount_value_gradient(
+        weights, all_bases, all_targets, beta,
+    )
+    aggregate_gradient = np.asarray(aggregate_gradient, dtype=np.float64)
+    record["aggregate_loss"] = float(aggregate_loss)
+    record["aggregate_gradient"] = aggregate_gradient.tolist()
+    notify()
+    if time.monotonic() >= deadline:
+        record["status"] = "timeout"
+        record["failure_reason"] = "deadline_after_aggregate_diagnostic"
+        notify()
+        return record
+    for layout_id in layout_ids:
+        if time.monotonic() >= deadline:
+            record["status"] = "timeout"
+            record["failure_reason"] = "deadline_during_per_layout_diagnostics"
+            notify()
+            return record
+        loss, gradient = critical_corner_softcount_value_gradient(
+            weights, {layout_id: bases_torch[layout_id]},
+            {layout_id: targets_torch[layout_id]}, beta,
+        )
+        gradient = np.asarray(gradient, dtype=np.float64)
+        record["per_layout"].append({
+            "layout_id": layout_id, "softcount_loss": float(loss),
+            "gradient": gradient.tolist(),
+            "gradient_l2_norm": float(np.linalg.norm(gradient)),
+        })
+        notify()
+    mean_loss = float(np.mean([row["softcount_loss"] for row in record["per_layout"]]))
+    mean_gradient = np.mean(
+        np.stack([np.asarray(row["gradient"], dtype=np.float64)
+                  for row in record["per_layout"]]), axis=0,
+    )
+    loss_error = abs(mean_loss - float(aggregate_loss))
+    gradient_error = float(np.max(np.abs(mean_gradient - aggregate_gradient), initial=0.0))
+    record["mean_per_layout_loss"] = mean_loss
+    record["mean_gradient"] = mean_gradient.tolist()
+    record["loss_parity_abs_error"] = float(loss_error)
+    record["gradient_parity_max_abs_error"] = gradient_error
+    record["status"] = "complete" if max(loss_error, gradient_error) <= 1e-10 else "parity_failure"
+    if record["status"] == "parity_failure":
+        record["failure_reason"] = "per_layout_mean_does_not_match_aggregate_objective"
+    if time.monotonic() >= deadline:
+        record["status"] = "timeout"
+        record["failure_reason"] = "deadline_after_per_layout_diagnostics"
+    notify()
+    if time.monotonic() >= deadline and record["status"] == "complete":
+        record["status"] = "timeout"
+        record["failure_reason"] = "deadline_during_diagnostic_progress_write"
+        notify()
+    return record
+
+
 def _checkpoint_metrics(rows, old_rows, new_rows, basis32, weights, bases_torch,
                         targets_torch, beta, anchor, reference, physical, order):
     all_eval = _evaluate_rows(rows, basis32, weights, physical)
@@ -522,33 +846,205 @@ def _incumbent_snapshot(seed, weights, steps_completed, phase, local_step, beta,
 
 def _run_seed(seed, ref, anchor, domain, all_rows, old_rows, new_rows,
               basis32, basis64, basis_torch, targets_torch, physical, new_reference_mean,
-              seed_started, seed_deadline, checkpoint_callback, iteration_callback):
-    current, init_record = _initial_weights(ref, seed, domain)
+              seed_started, seed_deadline, checkpoint_callback, iteration_callback,
+              initialization_protocol=None, diagnostics_protocol=None,
+              prior_starts=None):
     history, checkpoints, order = [], [], 0
-    last_incumbent = _incumbent_snapshot(
-        seed, current, 0, None, None, None, seed_started, "initialized", init_record,
-    )
-    iteration_callback(last_incumbent, history, checkpoints)
-    initial_poly = coverage.verify_original_nominal_polytope(
-            [basis64[row["layout_id"]] for row in old_rows],
-            [row["target"] for row in old_rows], current)
-    if not initial_poly["passed"]:
-        current = ref.copy()
-        init_record = {**init_record, "used_jitter": False, "fallback": True,
-                       "jitter_full_nominal_check": initial_poly,
-                       "check": domain.verify(ref)}
-        if not coverage.verify_original_nominal_polytope(
+    diagnostics = []
+    iteration_sink = iteration_callback
+
+    def iteration_callback(snapshot, current_history, current_checkpoints):
+        if initialization_protocol is not None:
+            details = snapshot.get("details")
+            if not (isinstance(details, dict) and "initialization" in details):
+                snapshot["details"] = {
+                    "optimizer_event_details": details,
+                    "initialization": init_record,
+                    "per_layout_diagnostics": diagnostics,
+                }
+        iteration_sink(snapshot, current_history, current_checkpoints)
+
+    if initialization_protocol is None:
+        # Preserve the already-consumed schema-5 jitter/fallback behavior verbatim.
+        current, init_record = _initial_weights(ref, seed, domain)
+        last_incumbent = _incumbent_snapshot(
+            seed, current, 0, None, None, None, seed_started, "initialized", init_record,
+        )
+        iteration_callback(last_incumbent, history, checkpoints)
+        initial_poly = coverage.verify_original_nominal_polytope(
                 [basis64[row["layout_id"]] for row in old_rows],
-                [row["target"] for row in old_rows], ref)["passed"]:
-            raise ValueError("seed17 reference fails the full original nominal polytope")
-    last_incumbent = _incumbent_snapshot(
-        seed, current, 0, None, None, None, seed_started,
-        "warm_start_feasible", init_record,
-    )
-    iteration_callback(last_incumbent, history, checkpoints)
+                [row["target"] for row in old_rows], current)
+        if not initial_poly["passed"]:
+            current = ref.copy()
+            init_record = {**init_record, "used_jitter": False, "fallback": True,
+                           "jitter_full_nominal_check": initial_poly,
+                           "check": domain.verify(ref)}
+            if not coverage.verify_original_nominal_polytope(
+                    [basis64[row["layout_id"]] for row in old_rows],
+                    [row["target"] for row in old_rows], ref)["passed"]:
+                raise ValueError("seed17 reference fails the full original nominal polytope")
+        last_incumbent = _incumbent_snapshot(
+            seed, current, 0, None, None, None, seed_started,
+            "warm_start_feasible", init_record,
+        )
+        iteration_callback(last_incumbent, history, checkpoints)
+    else:
+        current = np.asarray(ref, dtype=np.float64).copy()
+        init_state = {
+            "algorithm": "schema6_seeded_feasible_lmo_mixtures", "seed": int(seed),
+            "status": "searching", "fallback": False, "used_jitter": False,
+            "per_layout_diagnostics": diagnostics,
+        }
+        init_record = init_state
+        last_incumbent = _incumbent_snapshot(
+            seed, current, 0, None, None, None, seed_started,
+            "feasible_start_search_started", {"initialization": init_state},
+        )
+        iteration_callback(last_incumbent, history, checkpoints)
+
+        def publish_schema6(event, active_diagnostic=None):
+            nonlocal last_incumbent
+            details = {"initialization": init_record,
+                       "per_layout_diagnostics": diagnostics}
+            if active_diagnostic is not None:
+                details["active_per_layout_diagnostic"] = active_diagnostic
+            last_incumbent = _incumbent_snapshot(
+                seed, current, len(history), None, None, None, seed_started,
+                event, details,
+            )
+            iteration_callback(last_incumbent, history, checkpoints)
+
+        def init_progress(record):
+            init_state.clear()
+            init_state.update(record)
+            init_state["per_layout_diagnostics"] = diagnostics
+            publish_schema6("feasible_start_search_progress")
+
+        init_deadline = min(
+            seed_deadline,
+            time.monotonic() + float(initialization_protocol[
+                "maximum_initialization_seconds_per_seed"]),
+        )
+
+        def candidate_auditor(candidate):
+            checks = {}
+            if time.monotonic() >= init_deadline:
+                return {"passed": False, "deadline_exhausted": True,
+                        "failure_reason": "deadline_before_candidate_audit"}
+            checks["guard_domain"] = domain.verify(candidate)
+            if time.monotonic() >= init_deadline:
+                return {"passed": False, "deadline_exhausted": True,
+                        "checks": checks, "failure_reason": "deadline_after_guard_domain"}
+            checks["original_nominal_polytope"] = coverage.verify_original_nominal_polytope(
+                [basis64[row["layout_id"]] for row in old_rows],
+                [row["target"] for row in old_rows], candidate,
+            )
+            if time.monotonic() >= init_deadline:
+                return {"passed": False, "deadline_exhausted": True,
+                        "checks": checks, "failure_reason": "deadline_after_full_nominal_audit"}
+            checks["float32_critical_guard_audit"] = coverage.audit_float32_critical_guards(
+                basis32, {row["layout_id"]: row["target"] for row in all_rows},
+                anchor, ref, candidate,
+                [row["layout_id"] for row in old_rows],
+                [row["layout_id"] for row in new_rows],
+            )
+            checks["passed"] = bool(
+                checks["guard_domain"].get("passed")
+                and checks["original_nominal_polytope"].get("passed")
+                and checks["float32_critical_guard_audit"].get("passed")
+            )
+            if time.monotonic() >= init_deadline:
+                checks["passed"] = False
+                checks["deadline_exhausted"] = True
+                checks["failure_reason"] = "deadline_during_float32_audit"
+            return checks
+
+        current, init_record = _initial_feasible_weights(
+            ref, seed, domain, candidate_auditor, prior_starts,
+            init_deadline, protocol=initialization_protocol,
+            progress_callback=init_progress,
+        )
+        init_state.clear()
+        init_state.update(init_record)
+        init_record = init_state
+        init_record["per_layout_diagnostics"] = diagnostics
+        if current is None:
+            status = "timeout" if init_record.get("status") == "timeout" else "initialization_failed"
+            publish_schema6("feasible_start_search_failed")
+            return {"seed": seed, "status": status, "initialization": init_record,
+                    "per_layout_diagnostics": diagnostics, "steps_completed": 0,
+                    "history": history, "checkpoints": checkpoints,
+                    "selected": None, "last_incumbent": last_incumbent}
+        current = np.asarray(current, dtype=np.float64)
+        if time.monotonic() >= seed_deadline:
+            init_record["status"] = "timeout_after_feasible_start"
+            publish_schema6("deadline_after_feasible_start")
+            return {"seed": seed, "status": "timeout", "initialization": init_record,
+                    "per_layout_diagnostics": diagnostics, "steps_completed": 0,
+                    "history": history, "checkpoints": checkpoints,
+                    "selected": None, "last_incumbent": last_incumbent}
+        initial_poly = coverage.verify_original_nominal_polytope(
+            [basis64[row["layout_id"]] for row in old_rows],
+            [row["target"] for row in old_rows], current,
+        )
+        initial_domain = domain.verify(current)
+        if not initial_poly["passed"] or not initial_domain["passed"]:
+            init_record["status"] = "accepted_start_recheck_failed"
+            init_record["post_search_recheck"] = {
+                "original_nominal_polytope": initial_poly,
+                "guard_domain": initial_domain,
+            }
+            publish_schema6("accepted_start_recheck_failed")
+            return {"seed": seed, "status": "initialization_failed",
+                    "initialization": init_record, "per_layout_diagnostics": diagnostics,
+                    "steps_completed": 0, "history": history,
+                    "checkpoints": checkpoints, "selected": None,
+                    "last_incumbent": last_incumbent}
+        publish_schema6("warm_start_feasible")
+
+        def run_diagnostic(snapshot_id, beta):
+            active = {"snapshot": snapshot_id, "status": "starting", "beta": beta}
+            init_record["active_per_layout_diagnostic"] = active
+            publish_schema6("per_layout_diagnostic_started", active)
+
+            def diagnostic_progress(record):
+                init_record["active_per_layout_diagnostic"] = record
+                publish_schema6("per_layout_diagnostic_progress", record)
+
+            try:
+                result = _per_layout_objective_diagnostics(
+                    current, all_rows,
+                    basis_torch, targets_torch, beta, snapshot_id,
+                    seed_deadline, progress_callback=diagnostic_progress,
+                )
+            except Exception as exc:
+                result = {"snapshot": snapshot_id, "beta": float(beta),
+                          "status": "exception", "failure_reason": str(exc),
+                          "failure_type": type(exc).__name__}
+            diagnostics.append(result)
+            init_record.pop("active_per_layout_diagnostic", None)
+            publish_schema6("per_layout_diagnostic_finished", result)
+            return result
+
+        first_diagnostic = run_diagnostic("initial_beta_200", coverage.BETAS[0])
+        if first_diagnostic.get("status") != "complete":
+            status = "timeout" if first_diagnostic.get("status") == "timeout" else "diagnostics_failure"
+            return {"seed": seed, "status": status, "initialization": init_record,
+                    "per_layout_diagnostics": diagnostics, "steps_completed": 0,
+                    "history": history, "checkpoints": checkpoints,
+                    "selected": None, "last_incumbent": last_incumbent}
     bases_subset = {key: basis_torch[key] for key in [row["layout_id"] for row in all_rows]}
     targets_subset = {key: targets_torch[key] for key in [row["layout_id"] for row in all_rows]}
     for phase, beta in enumerate(coverage.BETAS):
+        if diagnostics_protocol is not None and phase > 0:
+            snapshot_id = "transition_beta_%d" % int(beta)
+            boundary_diagnostic = run_diagnostic(snapshot_id, beta)
+            if boundary_diagnostic.get("status") != "complete":
+                status = "timeout" if boundary_diagnostic.get("status") == "timeout" else "diagnostics_failure"
+                return {"seed": seed, "status": status, "initialization": init_record,
+                        "per_layout_diagnostics": diagnostics, "steps_completed": len(history),
+                        "history": history, "checkpoints": checkpoints,
+                        "selected": None, "last_incumbent": last_incumbent}
         for local_step in range(coverage.STEPS_PER_BETA):
             if time.monotonic() >= seed_deadline:
                 last_incumbent = _incumbent_snapshot(
@@ -743,15 +1239,26 @@ def _run_seed(seed, ref, anchor, domain, all_rows, old_rows, new_rows,
                 )
                 checkpoints.append(record)
                 checkpoint_callback(seed, record, history, checkpoints, last_incumbent)
+    if diagnostics_protocol is not None:
+        final_diagnostic = run_diagnostic("final_beta_800", coverage.BETAS[-1])
+        if final_diagnostic.get("status") != "complete":
+            status = "timeout" if final_diagnostic.get("status") == "timeout" else "diagnostics_failure"
+            return {"seed": seed, "status": status, "initialization": init_record,
+                    "per_layout_diagnostics": diagnostics, "steps_completed": len(history),
+                    "history": history, "checkpoints": checkpoints,
+                    "selected": None, "last_incumbent": last_incumbent}
     qualified = [row for row in checkpoints if row.get("qualified")]
     selected = min(qualified, key=coverage.checkpoint_rank) if qualified else None
-    return {
+    result = {
         "seed": seed, "status": "complete" if len(history) == coverage.STEPS_PER_SEED else "incomplete",
         "initialization": init_record, "steps_completed": len(history),
         "history": history, "checkpoints": checkpoints,
         "last_incumbent": last_incumbent,
         "qualified_checkpoint_count": len(qualified), "selected": selected,
     }
+    if diagnostics_protocol is not None:
+        result["per_layout_diagnostics"] = diagnostics
+    return result
 
 
 def _calibration_rows_from_dataset(cal_dataset, diagnostic: dict) -> list[dict]:
@@ -940,8 +1447,9 @@ def run(args) -> Path:
                              + "_" + uuid.uuid4().hex[:8])
     run_dir.mkdir(parents=True, exist_ok=False)
     report_path = run_dir / "coverage_report.json"
+    schema6 = plan.get("schema_version") == 6
     report = {
-        "schema_version": 1, "objective_id": coverage.OBJECTIVE_ID,
+        "schema_version": 2 if schema6 else 1, "objective_id": coverage.OBJECTIVE_ID,
         "status": "preflight_complete", "created_utc": datetime.now(timezone.utc).isoformat(),
         "plan_sha256": plan_sha, "previous_report_sha256": coverage.PINNED_PREVIOUS_REPORT_SHA256,
         "input_hashes": plan["input_hashes"],
@@ -952,6 +1460,11 @@ def run(args) -> Path:
         "calibration_status": "closed", "final3_status": "never indexed or evaluated",
         "seeds": [], "fit_frozen": False,
     }
+    if schema6:
+        report["superseded_coverage_attempt"] = plan["superseded_coverage_attempt"]
+        report["initialization_protocol"] = plan["initialization_protocol"]
+        report["diagnostics_protocol"] = plan["diagnostics_protocol"]
+        report["fixed_fit_layout_hashes"] = plan["fixed_fit_layout_hashes"]
     _atomic_json(report_path, report)
     calibration_opened = False
     try:
@@ -982,6 +1495,13 @@ def run(args) -> Path:
         novelty = _novelty_check(context["rows"], new_rows, plan["new_fit_generation"])
         if tuple(row["layout_id"] for row in new_rows) != coverage.LAYOUT_IDS:
             raise ValueError("new FIT layout IDs differ from the frozen plan")
+        if schema6:
+            actual_fixed_hashes = [
+                {key: row[key] for key in ("layout_id", "mask_sha256", "target_sha256")}
+                for row in novelty
+            ]
+            if actual_fixed_hashes != plan["fixed_fit_layout_hashes"]:
+                raise ValueError("generated fixed FIT masks/targets differ from consumed-attempt hashes")
         _sim, new_basis32, new_basis64, new_basis_torch, new_targets_torch, new_parity = _prepare_basis(
             new_rows, context["device"], plan["physical"],
         )
@@ -1039,6 +1559,7 @@ def run(args) -> Path:
         _atomic_json(report_path, report)
 
         selected_by_seed = {}
+        accepted_starts = []
         for seed in coverage.SEEDS:
             total_spent = float(sum(row.get("wall_seconds", 0.0) for row in report["seeds"]))
             total_remaining = coverage.TOTAL_LIMIT_SECONDS - total_spent
@@ -1104,11 +1625,19 @@ def run(args) -> Path:
             report["active_step"] = 0
             report["active_progress_path"] = str(progress_path)
             try:
+                seed_options = {}
+                if schema6:
+                    seed_options = {
+                        "initialization_protocol": plan["initialization_protocol"],
+                        "diagnostics_protocol": plan["diagnostics_protocol"],
+                        "prior_starts": accepted_starts,
+                    }
                 result = _run_seed(
                     seed, reference, anchor, domain, all_rows, context["rows"], new_rows,
                     basis32, basis64, basis_torch, targets_torch, plan["physical"],
                     ref_new["mean"], seed_started, seed_deadline,
                     checkpoint_callback, iteration_callback,
+                    **seed_options,
                 )
             except Exception as seed_exc:
                 seed_traceback = traceback.format_exc()
@@ -1126,7 +1655,10 @@ def run(args) -> Path:
                     incumbent = report.get("current_incumbent")
                 if not isinstance(incumbent, dict) or incumbent.get("seed") != int(seed):
                     incumbent = None
-                report["seeds"].append({
+                incumbent_details = (incumbent or {}).get("details", {})
+                partial_initialization = incumbent_details.get("initialization")
+                partial_diagnostics = incumbent_details.get("per_layout_diagnostics", [])
+                seed_failure_record = {
                     "seed": int(seed), "status": "solver_exception",
                     "steps_completed": int((incumbent or {}).get("steps_completed", len(history))),
                     "history": history, "checkpoints": checkpoints,
@@ -1135,7 +1667,11 @@ def run(args) -> Path:
                     "pre_seed_identity_recheck_seconds": float(identity_seconds),
                     "failure": {"type": type(seed_exc).__name__,
                                 "message": str(seed_exc), "traceback": seed_traceback},
-                })
+                }
+                if schema6:
+                    seed_failure_record["initialization"] = partial_initialization
+                    seed_failure_record["per_layout_diagnostics"] = partial_diagnostics
+                report["seeds"].append(seed_failure_record)
                 report["active_seed"] = None
                 report["active_step"] = None
                 report["active_progress_path"] = str(progress_path) if progress_path.exists() else None
@@ -1145,6 +1681,15 @@ def run(args) -> Path:
                 report["status"] = "solver_exception"
                 _atomic_json(report_path, report)
                 raise
+            initialization = result.get("initialization")
+            if (schema6 and isinstance(initialization, dict)
+                    and initialization.get("status") == "feasible_start_found"):
+                accepted_starts.append(np.asarray(initialization["weights"], dtype=np.float64))
+                result["accepted_start_index"] = len(accepted_starts)
+                result["accepted_start_hashes_in_order"] = [
+                    coverage.sha256_array(np.asarray(value, dtype="<f8"))
+                    for value in accepted_starts
+                ]
             elapsed = time.monotonic() - seed_started
             if elapsed > seed_budget:
                 result["status"] = "timeout"
