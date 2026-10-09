@@ -1,6 +1,6 @@
 # FIT source coverage experiment
 
-This source-only experiment optimizes the same 49 supported light-source weights against fixed FIT masks. Schema 5 is the consumed historical attempt; schema 6 changed only feasible-start construction and added diagnostics; schema 7 tested a static new-three critical-softcount objective; schema 8 is a prospective static new-three smooth-PV objective ablation. All schemas keep masks fixed and preserve the source constraints and hard FIT qualification. None uses MRC, dynamic hotspot weights, calibration in the loss or ranking, or final3 data.
+This source-only experiment optimizes the same 49 supported light-source weights against fixed FIT masks. Schema 5 is the consumed historical attempt; schema 6 changed only feasible-start construction and added diagnostics; schema 7 tested a static new-three critical-softcount objective; schema 8 tested a static new-three smooth-PV objective ablation. All schemas keep masks fixed and preserve the source constraints and hard FIT qualification. None uses MRC, dynamic hotspot weights, calibration in the loss or ranking, or final3 data.
 
 ## Objective and solver
 
@@ -14,7 +14,7 @@ For each seed, schema 6 draws up to eight 49-dimensional standard-normal directi
 
 Initialization and diagnostics count inside the existing 360-second seed and 1,800-second total budgets. Schema 6 records per-layout softcount loss, 49-vector gradient, and gradient norm at the initial beta 200 point, the beta 400 and 800 transitions, and the final beta 800 point. At each snapshot the arithmetic mean of the seven layout values and gradients must match the aggregate objective within absolute tolerance 1e-10. These diagnostics do not affect updates, checkpoint qualification, or ranking.
 
-## Schema-6 result and schema-7 objective ablation
+## Completed schema-6 through schema-8 objective ablations
 
 The schema-6 five-seed run completed all 204 steps for every seed with four complete per-layout diagnostic snapshots per seed. Its feasible-start search accepted five distinct starts, passed the registered audits, and did not fall back. The seeds nevertheless reached the same final source-vector SHA256. Each had one accepted update in each beta phase and 67 stationary-tolerance iterations per phase; no checkpoint qualified, and calibration remained closed.
 
@@ -25,11 +25,17 @@ Schema 7 changes only the Frank–Wolfe and line-search objective to the arithme
 
 The completed schema-7 run is FIT-only and did not qualify any checkpoint. All five seeds completed 204 steps and four diagnostic snapshots without fallback; each had one accepted update and 203 stationary-tolerance iterations. The five starts were distinct. All five final sources had the same float32 hash; their float64 vectors differed only at the last bits (maximum pairwise L1 distance 2.6945676592782242e-14). Runtime was 586.786348 seconds. Calibration remained closed and final3 was never indexed or evaluated. The new-three last-checkpoint means were PV-band 162, nominal L2 35, and worst-dose L2 94.333333, versus reference means 161.333333, 35.333333, and 93.333333. Nominal L2 improved by one aggregate mismatch, while PV-band and worst-dose L2 each worsened; the required strict PV-band reduction and no-worse hard gates therefore failed. The frozen report SHA256 is `ec993a4a2b5fb566816c05cad863c84ac0b525d0fc36d6dc3da3fe2d6798ece5`.
 
-Schema 8 is a prospective direct smooth-PV objective ablation. For each of the three new FIT layouts it optimizes the pixel mean
-`sigmoid(beta*(1.02*aerial - 0.225)) - sigmoid(beta*(0.98*aerial - 0.225))`,
-with equal static weight across the three layouts and the same beta continuation 200, 400, 800. It introduces no target-fidelity penalty. The existing four-layout guards, all hard FIT gates, feasible starts, budgets, steps, and all-seven critical-softcount beta-800 checkpoint ranking remain unchanged. Diagnostics preserve the all-seven critical-softcount comparisons and separately check value and gradient parity for the new-three smooth-PV objective. The schema-8 plan is prospective, has not been run, and makes no measured-performance claim; its local plan SHA256 is `de435a135c44fad5346cbc2cc21985cd54042d4655b037d87df3bb4f132a1127`.
+Schema 8 is the completed static new-three smooth-PV ablation. It minimizes the equal mean of the three new-layout dose-transition surrogates, using the same beta continuation 200/400/800, feasible-start protocol, guards, hard FIT gates, budgets, and all-seven critical-softcount beta-800 checkpoint ranking. It adds no target-fidelity penalty and changes no source physics or masks. All five distinct starts (the same five starting vectors as schema 6) completed 204 steps, four critical-softcount diagnostics, and four smooth-PV diagnostics without fallback. Each seed had three accepted updates total and 201 stationary-tolerance iterations. All five ended at the same float64 source weight SHA256 `480bca7f8ceceb0eeb15ea9d8e5b12f620e4eec395261349c3411e10aeea903b`; runtime was 683.377778 seconds. No checkpoint qualified, and calibration remained closed; final3 was never indexed or evaluated. The frozen FIT-only report SHA256 is `b3a2ba2d20a9a19584d35d15ebc5e942b9a78bbed85fb4f4fbe58df7a8d543c0`.
 
-The schema-7 hard qualification remains unchanged: every seed must pass the original-four FIT gate and the strict new-three gate, which requires a strict new-three mean hard-PV reduction and no regression in nominal or worst-dose L2 versus the fixed reference. All five seeds must qualify before calibration can open. The schema-6 attempt is immutable; schema 7 carries its plan and failed FIT-only report hashes as explicit supersession lineage. This is an ablation plan, not a reported improvement.
+The new-three fixed-reference means were PV-band 161.333333, nominal L2 35.333333, and worst-dose L2 93.333333. Every seed's last FIT checkpoint had means 161.333333, 35.666667, and 93.333333, respectively. PV-band and worst-dose tied the reference, while nominal L2 increased by one aggregate mismatch. The strict PV-band-improvement and nominal non-regression gates failed. This result does not show that an acceptable source is globally infeasible.
+
+The schema-8 training objective, for each of the three new FIT layouts, is the pixel mean
+`sigmoid(beta*(1.02*aerial - 0.225)) - sigmoid(beta*(0.98*aerial - 0.225))`,
+with equal static weight across the three layouts and the same beta continuation 200, 400, 800. It introduces no target-fidelity penalty. The external schema-8 plan SHA256 is `de435a135c44fad5346cbc2cc21985cd54042d4655b037d87df3bb4f132a1127`; the plan and attempt are consumed and must not be rerun. Its frozen report records the completed outcome above. The direct smooth-PV training surrogate is not the hard PV-band metric.
+
+Schema-8 diagnostics retain the all-seven critical-softcount comparison snapshots. Separately, they report per-layout values and gradients for the new-three smooth-PV objective and verify that their arithmetic mean matches the aggregate smooth-PV loss and gradient within absolute tolerance `1e-10`. These diagnostics do not affect optimization updates or checkpoint ranking.
+
+The hard qualification remained unchanged: every seed must pass the original-four FIT gate and the strict new-three gate, which requires a strict new-three mean hard-PV reduction and no regression in nominal or worst-dose L2 versus the fixed reference. All five seeds must qualify before calibration can open. Schema 8 had zero qualified checkpoints. The schema-6, -7, and -8 attempts are immutable and carry explicit supersession lineage; none produced a reported improvement.
 
 ## Consumed schema-5 attempt
 
@@ -69,42 +75,10 @@ Calibration is opened once only after all five complete, qualified FIT-only vect
 
 ## Execution
 
-Use the reviewed, clean committed source tree on the registered CUDA host. Keep the plan and prerequisite manifest in the same parent directory; write the report outside the repository.
-
-```powershell
-python scripts/optimize_source_coverage.py `
-  --mode preflight `
-  --plan-file "<frozen-plan.json>" `
-  --expected-plan-sha256 7b4cbc414bc2b2a6ee72fac3a633e27adb2bcb2b299b1adb79dbfa9cbc3fc6d2 `
-  --expected-previous-sha256 984dd65885ffc66b4eff3a70b4b8a81707841a777e8dd33ede9fe356daa5eb44
-
-python scripts/optimize_source_coverage.py `
-  --mode run `
-  --plan-file "<frozen-plan.json>" `
-  --expected-plan-sha256 7b4cbc414bc2b2a6ee72fac3a633e27adb2bcb2b299b1adb79dbfa9cbc3fc6d2 `
-  --expected-previous-sha256 984dd65885ffc66b4eff3a70b4b8a81707841a777e8dd33ede9fe356daa5eb44 `
-  --output-root "<absolute-output-directory-outside-repository>"
-```
-
-The first commands document the consumed schema-5 attempt; do not rerun that plan. The schema-6 and schema-7 plans and runs are also consumed and must not be rerun. The current prospective attempt is schema 8. After its code is reviewed and committed cleanly on the CUDA host, place the external plan in the same parent directory as the prerequisite manifest:
-
-```powershell
-python scripts/optimize_source_coverage.py `
-  --mode preflight `
-  --plan-file "/home/daniel/experiments/robust-source-quality-20261005-766872/direct_pv_objective_candidate_plan.json" `
-  --expected-plan-sha256 de435a135c44fad5346cbc2cc21985cd54042d4655b037d87df3bb4f132a1127 `
-  --expected-previous-sha256 984dd65885ffc66b4eff3a70b4b8a81707841a777e8dd33ede9fe356daa5eb44
-
-python scripts/optimize_source_coverage.py `
-  --mode run `
-  --plan-file "/home/daniel/experiments/robust-source-quality-20261005-766872/direct_pv_objective_candidate_plan.json" `
-  --expected-plan-sha256 de435a135c44fad5346cbc2cc21985cd54042d4655b037d87df3bb4f132a1127 `
-  --expected-previous-sha256 984dd65885ffc66b4eff3a70b4b8a81707841a777e8dd33ede9fe356daa5eb44 `
-  --output-root "<absolute-output-directory-outside-repository>"
-```
+The schema-5 through schema-8 plans and attempt markers are consumed; do not rerun them. In particular, the schema-8 external plan at `/home/daniel/experiments/robust-source-quality-20261005-766872/direct_pv_objective_candidate_plan.json` has SHA256 `de435a135c44fad5346cbc2cc21985cd54042d4655b037d87df3bb4f132a1127` and produced the frozen report identified above. No current run command is applicable. Any new experiment or diagnostic requires a separately reviewed implementation and a new prospective plan with explicit lineage and a new one-use marker.
 
 The unit tests use only small synthetic arrays and fixture metadata. They do not load the dataset, generate teacher targets, prepare optical bases, or score calibration.
 
 ## Limits of interpretation
 
-Frank–Wolfe optimizes a nonconvex surrogate with registered computational restarts; neither the reported gap nor a qualified checkpoint is a global-optimum certificate. The five seeds are computational restarts, not independent generalization trials. Schema 5 recorded five identical reference fallbacks and no qualified checkpoint. Schemas 6 and 7 completed with distinct feasible starts but had no qualified checkpoints. Schema 8 is implemented as a prospective objective ablation and has not been benchmarked. The reused calibration set is development data and does not demonstrate generalization. No result from this experiment is valid unless the complete identity and unchanged hard FIT gates pass.
+Frank–Wolfe optimizes a nonconvex surrogate with registered computational restarts; neither the reported gap nor a qualified checkpoint is a global-optimum certificate. The five seeds are computational restarts, not independent generalization trials. Schema 5 recorded five identical reference fallbacks and no qualified checkpoint. Schemas 6, 7, and 8 completed with distinct feasible starts but had no qualified checkpoints. The schema-8 result does not demonstrate global infeasibility. A fixed-mask direct hard-PV mixed-integer feasibility/optimization diagnostic has only been proposed from read-only source inspection; it is not implemented or run. Any candidate would require a full float32 hard-gate audit; a global infeasibility claim would additionally require a certified bound covering float32 threshold classification. The reused calibration set is development data and does not demonstrate generalization. No result from this experiment is valid unless the complete identity and unchanged hard FIT gates pass.
