@@ -19,10 +19,15 @@ import numpy as np
 from scipy import sparse
 
 OBJECTIVE_ID = "target_aware_fit_coverage_softcount_v1"
+OBJECTIVE_ID_V7 = "target_aware_fit_coverage_static_new3_softcount_v1"
 PINNED_PLAN_SHA256 = "7b4cbc414bc2b2a6ee72fac3a633e27adb2bcb2b299b1adb79dbfa9cbc3fc6d2"
 PINNED_PLAN_SHA256_V6 = "c6dffeca8919dc8b0299ca6d35b05131b7bc67b8b61d45aba86377c7199915bc"
+PINNED_PLAN_SHA256_V7 = "94f1078a622a5abdb3646b2696e8a8485e9d128de13226f97a6c20e1eb128e6b"
 PINNED_SUPERSEDED_COVERAGE_REPORT_SHA256 = "263c1bb7e0de8bfcfff133e58a0b1c417f78cb565b9b1c9d4c3fa995cb766320"
 PINNED_SUPERSEDED_COVERAGE_PLAN_SHA256 = PINNED_PLAN_SHA256
+PINNED_SUPERSEDED_SCHEMA6_REPORT_SHA256 = "1b830b964b9e8ccb84f4e8306e7419a2be221e687222ded57a4171894747289c"
+PINNED_SUPERSEDED_SCHEMA6_PLAN_PATH = "/home/daniel/experiments/robust-source-quality-20261005-766872/feasible_starts_candidate_plan.json"
+PINNED_SUPERSEDED_SCHEMA6_REPORT_PATH = "/home/daniel/experiments/robust-source-quality-20261005-766872/feasible-start-runs/20261009T201624Z_380d04cf/coverage_report.json"
 PINNED_FIXED_FIT_LAYOUT_HASHES = [
     {
         "layout_id": "fit_coverage_finite_ribbons_v1",
@@ -41,6 +46,7 @@ PINNED_FIXED_FIT_LAYOUT_HASHES = [
     },
 ]
 SCHEMA6_BASE_COMMIT = "a32222f24f6514d723236927971256ed6c3e1d98"
+SCHEMA7_BASE_COMMIT = "a7f5104685ba840e14d233282be0b39c36eb6fcf"
 SCHEMA6_INITIALIZATION_PROTOCOL = {
     "algorithm": "seeded random linear minimization vertices mixed with the seed17 reference",
     "random_generator": "numpy.default_rng(seed); standard_normal(49); normalize each direction by its L2 norm",
@@ -110,6 +116,29 @@ ORIGINAL_FIT_LAYOUT_IDS = (
     "train_vls_pitch24_width9", "train_hls_pitch28_width10",
     "train_l_contours", "train_t_junctions",
 )
+SCHEMA7_OBJECTIVE_DESCRIPTION = (
+    "critical softcount mean over exactly the three fixed new FIT layouts; static equal weight "
+    "1/3 per layout; the four original FIT layouts remain guarded and hard-gated but are excluded "
+    "only from the optimization loss and gradient; no dynamic/hotspot weights"
+)
+SCHEMA7_OPTIMIZATION_OBJECTIVE_PROTOCOL = {
+    "objective_id": OBJECTIVE_ID_V7,
+    "layout_ids": list(LAYOUT_IDS),
+    "aggregation": "arithmetic mean with static equal weight 1/3 per new FIT layout",
+    "optimizer_input": "only the three fixed new FIT layouts contribute softcount loss and gradient to Frank-Wolfe and line search",
+    "original_fit_role": "all four original FIT layouts remain in the unchanged guarded source domain, hard audits, checkpoint metrics, and original FIT qualification gate; excluded only from the optimization soft objective",
+    "checkpoint_selection": "unchanged qualified-checkpoint rank; common seven-layout softcount mean at beta 800 remains the soft ranking field",
+    "hard_qualification": "unchanged original four-layout gate and strict new-three PV reduction plus nominal/worst-dose L2 non-regression gate",
+}
+SCHEMA7_OPTIMIZATION_DIAGNOSTICS_PROTOCOL = {
+    "snapshots": list(SCHEMA6_DIAGNOSTICS_PROTOCOL["snapshots"]),
+    "per_layout_fields": ["softcount_loss", "gradient", "gradient_l2_norm"],
+    "all_layout_aggregate": "report arithmetic mean over all seven FIT layouts for comparison and common checkpoint ranking; never use it for schema-7 optimizer updates",
+    "optimization_aggregate": "report arithmetic mean over exactly the three fixed new FIT layouts and assert parity with the schema-7 optimization objective",
+    "mean_parity_absolute_tolerance": 1e-10,
+    "optimizer_or_ranking_influence": False,
+    "budget_accounting": "all aggregate and per-layout evaluations count inside the seed and total solver deadlines",
+}
 
 
 def sha256_file(path: str | Path) -> str:
@@ -318,6 +347,60 @@ def _validate_schema6_plan_payload(plan: dict) -> None:
         raise ValueError("schema-6 plan must disable jitter and reference fallback")
 
 
+def _validate_schema7_plan_payload(plan: dict) -> None:
+    if not isinstance(plan, dict):
+        raise ValueError("coverage plan must be an object")
+    added_fields = {
+        "superseded_schema6_attempt", "optimization_objective_protocol",
+        "optimization_diagnostics_protocol",
+    }
+    inherited_fields = {
+        "schema_version", "status", "created_utc", "objective_id", "base_commit",
+        "dataset_file", "diagnostic_file", "prerequisite_manifest", "previous_report",
+        "previous_plan", "input_hashes", "scope", "physical", "protocol",
+        "new_fit_generation", "completion", "superseded_coverage_attempt",
+        "fixed_fit_layout_hashes", "initialization_protocol", "diagnostics_protocol",
+    }
+    if set(plan) != inherited_fields | added_fields:
+        raise ValueError("coverage plan fields differ from the frozen schema-7 contract")
+    if (plan.get("schema_version") != 7
+            or plan.get("status") != "prospective_candidate_plan"
+            or plan.get("objective_id") != OBJECTIVE_ID_V7
+            or plan.get("base_commit") != SCHEMA7_BASE_COMMIT):
+        raise ValueError("coverage plan schema/status/objective/base commit differs from schema 7")
+    expected_superseded = {
+        "status": "no_fit_qualified_checkpoint",
+        "plan_path": PINNED_SUPERSEDED_SCHEMA6_PLAN_PATH,
+        "plan_sha256": PINNED_PLAN_SHA256_V6,
+        "report_path": PINNED_SUPERSEDED_SCHEMA6_REPORT_PATH,
+        "report_sha256": PINNED_SUPERSEDED_SCHEMA6_REPORT_SHA256,
+    }
+    if plan.get("superseded_schema6_attempt") != expected_superseded:
+        raise ValueError("schema-7 plan does not preserve the frozen failed schema-6 attempt")
+    if plan.get("optimization_objective_protocol") != SCHEMA7_OPTIMIZATION_OBJECTIVE_PROTOCOL:
+        raise ValueError("schema-7 static new-three objective protocol differs from frozen values")
+    if plan.get("optimization_diagnostics_protocol") != SCHEMA7_OPTIMIZATION_DIAGNOSTICS_PROTOCOL:
+        raise ValueError("schema-7 objective diagnostics protocol differs from frozen values")
+    if plan.get("protocol", {}).get("objective") != SCHEMA7_OBJECTIVE_DESCRIPTION:
+        raise ValueError("schema-7 objective description differs from its frozen value")
+
+    # Validate every inherited schema-6 physics, guard, initialization, lineage,
+    # budget, ranking, and hard-gate field without changing the v5/v6 validators.
+    inherited = dict(plan)
+    for key in added_fields:
+        inherited.pop(key)
+    inherited["schema_version"] = 6
+    inherited["objective_id"] = OBJECTIVE_ID
+    inherited["base_commit"] = SCHEMA6_BASE_COMMIT
+    inherited_protocol = dict(plan["protocol"])
+    inherited_protocol["objective"] = (
+        "critical softcount mean with static equal weight per each of7FITlayouts; "
+        "no dynamic/hotspot weights; existing target-aware critical dose softcount"
+    )
+    inherited["protocol"] = inherited_protocol
+    _validate_schema6_plan_payload(inherited)
+
+
 def validate_superseded_coverage_report(report: dict, expected_plan_sha256: str) -> None:
     """Validate only the FIT/attempt boundary of the consumed schema-5 report.
 
@@ -375,6 +458,71 @@ def validate_superseded_coverage_report(report: dict, expected_plan_sha256: str)
         raise ValueError("superseded coverage report seeds did not share the reference fallback")
 
 
+def validate_superseded_schema6_report(report: dict, expected_plan_sha256: str) -> None:
+    """Validate only the frozen schema-6 FIT failure and closed split boundary."""
+    if (not isinstance(report, dict)
+            or report.get("schema_version") != 2
+            or report.get("objective_id") != OBJECTIVE_ID
+            or report.get("status") != "no_fit_qualified_checkpoint"
+            or report.get("plan_sha256") != expected_plan_sha256
+            or report.get("coverage_attempt_consumed") is not True
+            or report.get("calibration_status") != "closed"
+            or report.get("final3_status") != "never indexed or evaluated"):
+        raise ValueError("superseded schema-6 report is not the closed failed FIT attempt")
+    if report.get("fixed_fit_layout_hashes") != PINNED_FIXED_FIT_LAYOUT_HASHES:
+        raise ValueError("superseded schema-6 FIT mask/target hashes differ from the fixed protocol")
+    observed_layouts = report.get("new_fit_layouts")
+    if not isinstance(observed_layouts, list):
+        raise ValueError("superseded schema-6 report lacks fixed new FIT identities")
+    observed_hashes = [
+        {key: row.get(key) for key in ("layout_id", "mask_sha256", "target_sha256")}
+        for row in observed_layouts if isinstance(row, dict)
+    ]
+    if (len(observed_hashes) != len(observed_layouts)
+            or observed_hashes != PINNED_FIXED_FIT_LAYOUT_HASHES):
+        raise ValueError("superseded schema-6 new FIT mask/target hashes differ from the fixed protocol")
+
+    seeds = report.get("seeds")
+    if not isinstance(seeds, list) or len(seeds) != len(SEEDS):
+        raise ValueError("superseded schema-6 report does not contain all five seeds")
+    start_hashes = []
+    expected_snapshots = SCHEMA6_DIAGNOSTICS_PROTOCOL["snapshots"]
+    for seed, row in zip(SEEDS, seeds):
+        initialization = row.get("initialization") if isinstance(row, dict) else None
+        diagnostics = row.get("per_layout_diagnostics") if isinstance(row, dict) else None
+        checkpoints = row.get("checkpoints") if isinstance(row, dict) else None
+        start_hash = initialization.get("weights_sha256") if isinstance(initialization, dict) else None
+        if (not isinstance(row, dict)
+                or row.get("seed") != seed
+                or row.get("status") != "complete"
+                or row.get("steps_completed") != STEPS_PER_SEED
+                or row.get("qualified_checkpoint_count") != 0
+                or row.get("selected") is not None
+                or not isinstance(initialization, dict)
+                or initialization.get("status") != "feasible_start_found"
+                or initialization.get("fallback") is not False
+                or initialization.get("used_jitter") is not False
+                or not isinstance(start_hash, str) or len(start_hash) != 64
+                or not isinstance(diagnostics, list)
+                or [item.get("snapshot") for item in diagnostics if isinstance(item, dict)] != expected_snapshots
+                or any(not isinstance(item, dict) or item.get("status") != "complete"
+                       for item in diagnostics)
+                or not isinstance(checkpoints, list)
+                or len(checkpoints) != 11
+                or any(not isinstance(item, dict) or item.get("qualified") is not False
+                       for item in checkpoints)):
+            raise ValueError("superseded schema-6 seed FIT state differs from the completed failed attempt")
+        start_hashes.append(start_hash)
+    if len(set(start_hashes)) != len(SEEDS):
+        raise ValueError("superseded schema-6 starts are not distinct")
+    expected_start_prefix = []
+    for index, row in enumerate(seeds, start=1):
+        expected_start_prefix.append(start_hashes[index - 1])
+        if (row.get("accepted_start_index") != index
+                or row.get("accepted_start_hashes_in_order") != expected_start_prefix):
+            raise ValueError("superseded schema-6 accepted start history is not ordered and complete")
+
+
 def validate_plan_payload(plan: dict) -> None:
     """Dispatch the immutable v5 protocol or the separately pinned v6 protocol."""
     if not isinstance(plan, dict):
@@ -383,6 +531,8 @@ def validate_plan_payload(plan: dict) -> None:
         _validate_schema5_plan_payload(plan)
     elif plan.get("schema_version") == 6:
         _validate_schema6_plan_payload(plan)
+    elif plan.get("schema_version") == 7:
+        _validate_schema7_plan_payload(plan)
     else:
         raise ValueError("coverage plan schema version is not registered")
 
@@ -390,18 +540,26 @@ def validate_plan_payload(plan: dict) -> None:
 def validate_plan_file(path: str | Path, expected_sha256: str) -> tuple[dict, str]:
     raw, actual_sha = read_hashed_bytes(path)
     expected = str(expected_sha256).lower()
-    # Keep every non-v6 request on the original schema-5 pin/error path.
-    if expected != PINNED_PLAN_SHA256_V6:
-        if expected != PINNED_PLAN_SHA256 or actual_sha != PINNED_PLAN_SHA256:
+    # Preserve the exact fixed v5/v6 pin paths; schema 7 receives its own pin.
+    if expected == PINNED_PLAN_SHA256:
+        if actual_sha != PINNED_PLAN_SHA256:
             raise ValueError("plan SHA256 does not match the required frozen plan pin")
         plan = json.loads(raw.decode("utf-8"))
         _validate_schema5_plan_payload(plan)
         return plan, actual_sha
-    if actual_sha != PINNED_PLAN_SHA256_V6:
-        raise ValueError("plan SHA256 does not match the required frozen schema-6 plan pin")
-    plan = json.loads(raw.decode("utf-8"))
-    validate_plan_payload(plan)
-    return plan, actual_sha
+    if expected == PINNED_PLAN_SHA256_V6:
+        if actual_sha != PINNED_PLAN_SHA256_V6:
+            raise ValueError("plan SHA256 does not match the required frozen schema-6 plan pin")
+        plan = json.loads(raw.decode("utf-8"))
+        _validate_schema6_plan_payload(plan)
+        return plan, actual_sha
+    if expected == PINNED_PLAN_SHA256_V7:
+        if actual_sha != PINNED_PLAN_SHA256_V7:
+            raise ValueError("plan SHA256 does not match the required frozen schema-7 plan pin")
+        plan = json.loads(raw.decode("utf-8"))
+        _validate_schema7_plan_payload(plan)
+        return plan, actual_sha
+    raise ValueError("plan SHA256 does not match the required frozen plan pin")
 
 
 def validate_previous_report(report: dict) -> dict:

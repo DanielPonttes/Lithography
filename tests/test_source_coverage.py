@@ -423,6 +423,51 @@ class CoverageTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "plan SHA256"):
                     coverage.validate_plan_file(plan_file, digest)
 
+        schema7 = copy.deepcopy(schema6)
+        schema7.update({
+            "schema_version": 7,
+            "objective_id": coverage.OBJECTIVE_ID_V7,
+            "base_commit": coverage.SCHEMA7_BASE_COMMIT,
+            "superseded_schema6_attempt": {
+                "status": "no_fit_qualified_checkpoint",
+                "plan_path": coverage.PINNED_SUPERSEDED_SCHEMA6_PLAN_PATH,
+                "plan_sha256": coverage.PINNED_PLAN_SHA256_V6,
+                "report_path": coverage.PINNED_SUPERSEDED_SCHEMA6_REPORT_PATH,
+                "report_sha256": coverage.PINNED_SUPERSEDED_SCHEMA6_REPORT_SHA256,
+            },
+            "optimization_objective_protocol": copy.deepcopy(
+                coverage.SCHEMA7_OPTIMIZATION_OBJECTIVE_PROTOCOL),
+            "optimization_diagnostics_protocol": copy.deepcopy(
+                coverage.SCHEMA7_OPTIMIZATION_DIAGNOSTICS_PROTOCOL),
+        })
+        schema7["protocol"]["objective"] = coverage.SCHEMA7_OBJECTIVE_DESCRIPTION
+        coverage.validate_plan_payload(schema7)
+        changed_v7 = copy.deepcopy(schema7)
+        changed_v7["optimization_objective_protocol"]["layout_ids"][0] = "wrong_layout"
+        with self.assertRaisesRegex(ValueError, "objective protocol"):
+            coverage.validate_plan_payload(changed_v7)
+        changed_v7 = copy.deepcopy(schema7)
+        changed_v7["protocol"]["original_fit_gate"]["mean_band_pixels_max"] = 234.6
+        with self.assertRaisesRegex(ValueError, "original FIT gate"):
+            coverage.validate_plan_payload(changed_v7)
+        changed_v7 = copy.deepcopy(schema7)
+        changed_v7["superseded_schema6_attempt"]["report_sha256"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "frozen failed schema-6"):
+            coverage.validate_plan_payload(changed_v7)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_file = Path(tmp) / "schema7.json"
+            raw = json.dumps(schema7, indent=2, ensure_ascii=False,
+                             allow_nan=False).encode("utf-8")
+            plan_file.write_bytes(raw)
+            digest = hashlib.sha256(raw).hexdigest()
+            with patch.object(coverage, "PINNED_PLAN_SHA256_V7", digest):
+                _, actual = coverage.validate_plan_file(plan_file, digest)
+                self.assertEqual(actual, digest)
+                plan_file.write_bytes(raw + b" ")
+                with self.assertRaisesRegex(ValueError, "schema-7 plan pin"):
+                    coverage.validate_plan_file(plan_file, digest)
+
     def test_schema6_seeded_feasible_starts_are_deterministic_distinct_and_fail_closed(self):
         reference = np.array([1.0, 0.0, 0.0], dtype=np.float64)
 
@@ -634,6 +679,7 @@ class CoverageTests(unittest.TestCase):
         self.assertTrue(all(len(item["gradient"]) == 49 for item in record["per_layout"]))
         self.assertLessEqual(record["loss_parity_abs_error"], 1e-10)
         self.assertLessEqual(record["gradient_parity_max_abs_error"], 1e-10)
+        self.assertNotIn("optimization_objective_id", record)
 
         with patch.object(runner.time, "monotonic", side_effect=[0.0, 2.0]):
             deadline_record = runner._per_layout_objective_diagnostics(
@@ -641,6 +687,37 @@ class CoverageTests(unittest.TestCase):
             )
         self.assertEqual(deadline_record["status"], "timeout")
         self.assertEqual(deadline_record["failure_reason"], "deadline_after_aggregate_diagnostic")
+
+    def test_schema7_diagnostics_match_all_seven_and_new_three_means(self):
+        layout_ids = list(coverage.ORIGINAL_FIT_LAYOUT_IDS + coverage.LAYOUT_IDS)
+        rows, bases, targets = [], {}, {}
+        for index, layout_id in enumerate(layout_ids):
+            rows.append({"layout_id": layout_id})
+            bases[layout_id] = torch.full((49, 2, 2), 0.1 + index * 0.005,
+                                          dtype=torch.float64)
+            targets[layout_id] = torch.tensor([[True, False], [index % 2 == 0, False]])
+        weights = np.full(49, 1.0 / 49.0, dtype=np.float64)
+        record = runner._per_layout_objective_diagnostics(
+            weights, rows, bases, targets, 800.0, "final_beta_800",
+            time.monotonic() + 5.0,
+            optimization_layout_ids=coverage.LAYOUT_IDS,
+        )
+        self.assertEqual(record["status"], "complete")
+        self.assertEqual(record["aggregate_role"],
+                         "all-seven comparison and common checkpoint ranking only")
+        self.assertEqual(record["optimization_objective_id"], coverage.OBJECTIVE_ID_V7)
+        self.assertEqual(record["optimization_layout_ids"], list(coverage.LAYOUT_IDS))
+        for field in ("loss_parity_abs_error", "gradient_parity_max_abs_error",
+                      "optimization_loss_parity_abs_error",
+                      "optimization_gradient_parity_max_abs_error"):
+            self.assertLessEqual(record[field], 1e-10)
+        by_id = {row["layout_id"]: row for row in record["per_layout"]}
+        expected_loss = np.mean([by_id[key]["softcount_loss"] for key in coverage.LAYOUT_IDS])
+        expected_gradient = np.mean(np.stack([by_id[key]["gradient"]
+                                              for key in coverage.LAYOUT_IDS]), axis=0)
+        self.assertAlmostEqual(record["optimization_mean_per_layout_loss"], expected_loss)
+        np.testing.assert_allclose(record["optimization_mean_gradient"], expected_gradient,
+                                   rtol=0.0, atol=1e-12)
 
     def test_superseded_attempt_validation_checks_closed_fit_boundary_only(self):
         report = {
@@ -667,6 +744,55 @@ class CoverageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "seed history is malformed"):
             coverage.validate_superseded_coverage_report(
                 report, coverage.PINNED_SUPERSEDED_COVERAGE_PLAN_SHA256,
+            )
+
+    def test_schema6_report_validation_requires_distinct_failed_fit_seeds_and_closed_boundary(self):
+        start_hashes = ["%064x" % index for index in range(1, len(coverage.SEEDS) + 1)]
+        seeds = []
+        for index, seed in enumerate(coverage.SEEDS, start=1):
+            seeds.append({
+                "seed": seed, "status": "complete", "steps_completed": coverage.STEPS_PER_SEED,
+                "qualified_checkpoint_count": 0, "selected": None,
+                "initialization": {"status": "feasible_start_found", "fallback": False,
+                                   "used_jitter": False, "weights_sha256": start_hashes[index - 1]},
+                "accepted_start_index": index,
+                "accepted_start_hashes_in_order": start_hashes[:index],
+                "per_layout_diagnostics": [
+                    {"snapshot": name, "status": "complete"}
+                    for name in coverage.SCHEMA6_DIAGNOSTICS_PROTOCOL["snapshots"]
+                ],
+                "checkpoints": [{"qualified": False} for _ in range(11)],
+            })
+        report = {
+            "schema_version": 2, "objective_id": coverage.OBJECTIVE_ID,
+            "status": "no_fit_qualified_checkpoint",
+            "plan_sha256": coverage.PINNED_PLAN_SHA256_V6,
+            "coverage_attempt_consumed": True, "calibration_status": "closed",
+            "final3_status": "never indexed or evaluated",
+            "fixed_fit_layout_hashes": copy.deepcopy(coverage.PINNED_FIXED_FIT_LAYOUT_HASHES),
+            "new_fit_layouts": copy.deepcopy(coverage.PINNED_FIXED_FIT_LAYOUT_HASHES),
+            "seeds": seeds,
+        }
+        coverage.validate_superseded_schema6_report(
+            report, coverage.PINNED_PLAN_SHA256_V6,
+        )
+        duplicate = copy.deepcopy(report)
+        duplicate["seeds"][1]["initialization"]["weights_sha256"] = start_hashes[0]
+        with self.assertRaisesRegex(ValueError, "starts are not distinct"):
+            coverage.validate_superseded_schema6_report(
+                duplicate, coverage.PINNED_PLAN_SHA256_V6,
+            )
+        opened = copy.deepcopy(report)
+        opened["calibration_status"] = "opened_once_in_progress"
+        with self.assertRaisesRegex(ValueError, "closed failed FIT"):
+            coverage.validate_superseded_schema6_report(
+                opened, coverage.PINNED_PLAN_SHA256_V6,
+            )
+        qualified = copy.deepcopy(report)
+        qualified["seeds"][0]["checkpoints"][0]["qualified"] = True
+        with self.assertRaisesRegex(ValueError, "seed FIT state"):
+            coverage.validate_superseded_schema6_report(
+                qualified, coverage.PINNED_PLAN_SHA256_V6,
             )
 
     def test_hash_uses_same_bytes_and_lineage_mutation_is_detected(self):
@@ -1214,6 +1340,148 @@ class CoverageTests(unittest.TestCase):
                                         "transition_beta_800", "final_beta_800"])
         self.assertEqual([row["snapshot"] for row in result["per_layout_diagnostics"]], snapshot_ids)
         self.assertFalse(result["initialization"]["fallback"])
+
+    def test_schema7_run_seed_optimizes_new_three_but_ranks_with_all_seven(self):
+        reference = np.zeros(49, dtype=np.float64)
+        reference[0] = 1.0
+        start = reference.copy()
+        start[0], start[1] = 0.5, 0.5
+
+        class Domain:
+            def verify(self, weights):
+                return {"passed": True}
+
+        ids = list(coverage.ORIGINAL_FIT_LAYOUT_IDS + coverage.LAYOUT_IDS)
+        rows = [{"layout_id": key, "target": np.zeros((1, 1), dtype=bool)} for key in ids]
+        arrays32 = {key: np.zeros((49, 1, 1), dtype=np.float32) for key in ids}
+        arrays64 = {key: value.astype(np.float64) for key, value in arrays32.items()}
+        tensors = {key: torch.zeros((49, 1, 1), dtype=torch.float64) for key in ids}
+        targets = {key: torch.zeros((1, 1), dtype=torch.bool) for key in ids}
+        snapshot_ids, diagnostic_objectives = [], []
+        optimizer_objective_keys, armijo_objective_keys, checkpoint_args = [], [], []
+
+        def fake_init(_ref, seed, _domain, _auditor, _previous, _deadline,
+                      protocol=None, progress_callback=None):
+            record = {"algorithm": "schema6_seeded_feasible_lmo_mixtures",
+                      "seed": seed, "status": "feasible_start_found", "fallback": False,
+                      "weights": start.tolist(),
+                      "weights_sha256": coverage.sha256_array(np.asarray(start, dtype="<f8"))}
+            if progress_callback:
+                progress_callback(record)
+            return start.copy(), record
+
+        def fake_diagnostic(_weights, _rows, _bases, _targets, beta, snapshot_id,
+                            _deadline, progress_callback=None, optimization_layout_ids=None):
+            snapshot_ids.append(snapshot_id)
+            diagnostic_objectives.append(list(optimization_layout_ids or []))
+            record = {"snapshot": snapshot_id, "beta": beta, "status": "complete"}
+            if progress_callback:
+                progress_callback(record)
+            return record
+
+        def fake_checkpoint(*args):
+            checkpoint_args.append(args)
+            return {"checkpoint_order": int(args[11])}
+
+        vertex = np.zeros(49, dtype=np.float64)
+        vertex[1] = 1.0
+
+        def fake_gradient(weights, bases, _targets, _beta):
+            optimizer_objective_keys.append(tuple(bases))
+            gradient = np.zeros(49, dtype=np.float64)
+            gradient[0] = 1.0
+            return float(weights[0]), gradient
+
+        def fake_armijo_objective(weights, bases, _targets, _beta):
+            armijo_objective_keys.append(tuple(bases))
+            return float(weights[0])
+
+        def fake_lmo(_domain, gradient, _deadline):
+            return {"status": "optimal_verified", "weights": vertex.copy(),
+                    "objective_value": float(gradient @ vertex),
+                    "record": {"status_code": 0}}
+
+        with patch.object(runner.time, "monotonic", return_value=1000.0), \
+             patch.object(runner, "_initial_feasible_weights", side_effect=fake_init), \
+             patch.object(runner, "_per_layout_objective_diagnostics", side_effect=fake_diagnostic), \
+             patch.object(runner, "critical_corner_softcount_value_gradient",
+                          side_effect=fake_gradient), \
+             patch.object(runner, "critical_corner_softcount_value",
+                          side_effect=fake_armijo_objective), \
+             patch.object(runner, "_linprog_lmo", side_effect=fake_lmo), \
+             patch.object(runner, "_checkpoint_metrics", side_effect=fake_checkpoint), \
+             patch.object(runner, "_fit_checkpoint_qualified",
+                          side_effect=lambda row, *_: {**row, "qualified": False}), \
+             patch.object(coverage, "verify_original_nominal_polytope",
+                          return_value={"passed": True}):
+            result = runner._run_seed(
+                17, reference, reference, Domain(), rows, rows[:4], rows[4:],
+                arrays32, arrays64, tensors, targets, {}, {}, 1000.0, 2000.0,
+                lambda *_: None, lambda *_: None,
+                initialization_protocol=coverage.SCHEMA6_INITIALIZATION_PROTOCOL,
+                diagnostics_protocol=coverage.SCHEMA6_DIAGNOSTICS_PROTOCOL,
+                prior_starts=[], objective_layout_ids=coverage.LAYOUT_IDS,
+            )
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["steps_completed"], coverage.STEPS_PER_SEED)
+        self.assertEqual(snapshot_ids, list(coverage.SCHEMA6_DIAGNOSTICS_PROTOCOL["snapshots"]))
+        self.assertTrue(all(value == list(coverage.LAYOUT_IDS) for value in diagnostic_objectives))
+        self.assertEqual(len(optimizer_objective_keys), coverage.STEPS_PER_SEED)
+        self.assertTrue(all(keys == tuple(coverage.LAYOUT_IDS)
+                            for keys in optimizer_objective_keys))
+        self.assertEqual(armijo_objective_keys, [tuple(coverage.LAYOUT_IDS)])
+        self.assertEqual(result["history"][0]["status"], "accepted")
+        self.assertEqual(result["history"][0]["line_search"]["gamma"], 1.0)
+        self.assertEqual(result["history"][0]["gap"], 0.5)
+        self.assertTrue(all(row["status"] == "stationary_tolerance"
+                            for row in result["history"][1:]))
+        self.assertTrue(all(row["optimization_objective_id"] == coverage.OBJECTIVE_ID_V7
+                            for row in result["history"]))
+        self.assertEqual(len(checkpoint_args), 11)
+        first_checkpoint = checkpoint_args[0]
+        self.assertEqual(tuple(first_checkpoint[5]), tuple(coverage.LAYOUT_IDS))
+        self.assertEqual(tuple(first_checkpoint[12]), tuple(ids))
+        self.assertEqual(first_checkpoint[14], coverage.OBJECTIVE_ID_V7)
+        self.assertEqual(first_checkpoint[15], list(coverage.LAYOUT_IDS))
+        self.assertEqual(first_checkpoint[16], ids)
+
+    def test_schema7_checkpoint_separates_training_and_common_selection_objectives(self):
+        ids = list(coverage.ORIGINAL_FIT_LAYOUT_IDS + coverage.LAYOUT_IDS)
+        new_ids = list(coverage.LAYOUT_IDS)
+        metrics = {"mean": {"band_pixels": 0.0, "L2_pixels": 0.0,
+                            "L2_worst_dose_pixels": 0.0},
+                   "no_blank_positive_target_any_dose": True}
+        objective_calls = []
+
+        def fake_objective(_weights, bases, _targets, beta):
+            objective_calls.append((tuple(bases), beta))
+            return float(len(bases)) + beta / 1000.0
+
+        all_bases = {key: object() for key in ids}
+        all_targets = {key: object() for key in ids}
+        new_bases = {key: all_bases[key] for key in new_ids}
+        new_targets = {key: all_targets[key] for key in new_ids}
+        rows = [{"layout_id": key, "target": np.zeros((1, 1), dtype=bool)} for key in ids]
+        with patch.object(runner, "_evaluate_rows", return_value=metrics), \
+             patch.object(coverage, "audit_float32_critical_guards",
+                          return_value={"passed": True}), \
+             patch.object(runner, "critical_corner_softcount_value",
+                          side_effect=fake_objective):
+            record = runner._checkpoint_metrics(
+                rows,
+                rows[:4],
+                rows[4:], {}, np.full(49, 1.0 / 49),
+                new_bases, new_targets, 400.0, np.full(49, 1.0 / 49),
+                np.full(49, 1.0 / 49), {}, 25,
+                all_bases, all_targets, coverage.OBJECTIVE_ID_V7, new_ids, ids,
+            )
+        self.assertEqual(objective_calls, [(tuple(new_ids), 400.0), (tuple(ids), 800.0)])
+        self.assertEqual(record["training_soft_objective"], 3.4)
+        self.assertEqual(record["selection_soft_objective"], 7.8)
+        self.assertEqual(record["training_objective_id"], coverage.OBJECTIVE_ID_V7)
+        self.assertEqual(record["training_objective_layout_ids"], new_ids)
+        self.assertEqual(record["selection_objective_id"], coverage.OBJECTIVE_ID)
+        self.assertEqual(record["selection_objective_layout_ids"], ids)
 
     def test_calibration_failure_state_records_open_or_closed_boundary(self):
         closed = {"coverage_attempt_consumed": False}

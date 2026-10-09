@@ -131,7 +131,7 @@ def _validate_identities(plan_path: Path, plan_sha: str, previous_sha: str,
         raise ValueError("previous Pareto plan no longer matches the required SHA256")
     previous = coverage.validate_previous_report(previous_report)
     superseded_identity = None
-    if plan.get("schema_version") == 6:
+    if plan.get("schema_version") in (6, 7):
         superseded = plan["superseded_coverage_attempt"]
         superseded_plan_path = _absolute_file(
             superseded["plan_path"], "superseded_coverage_attempt.plan_path",
@@ -156,6 +156,33 @@ def _validate_identities(plan_path: Path, plan_sha: str, previous_sha: str,
             "plan_sha256": coverage.PINNED_SUPERSEDED_COVERAGE_PLAN_SHA256,
             "report_sha256": coverage.PINNED_SUPERSEDED_COVERAGE_REPORT_SHA256,
         }
+    schema6_identity = None
+    if plan.get("schema_version") == 7:
+        superseded = plan["superseded_schema6_attempt"]
+        superseded_plan_path = _absolute_file(
+            superseded["plan_path"], "superseded_schema6_attempt.plan_path",
+        )
+        superseded_report_path = _absolute_file(
+            superseded["report_path"], "superseded_schema6_attempt.report_path",
+        )
+        superseded_plan, superseded_plan_sha = coverage.validate_plan_file(
+            superseded_plan_path, coverage.PINNED_PLAN_SHA256_V6,
+        )
+        if (superseded_plan.get("schema_version") != 6
+                or superseded_plan_sha != superseded["plan_sha256"]):
+            raise ValueError("superseded schema-6 plan differs from its frozen pin")
+        superseded_report, _superseded_report_bytes, superseded_report_sha = _read_hashed_json(
+            superseded_report_path
+        )
+        if superseded_report_sha != superseded["report_sha256"]:
+            raise ValueError("superseded schema-6 FIT report differs from its frozen pin")
+        coverage.validate_superseded_schema6_report(
+            superseded_report, coverage.PINNED_PLAN_SHA256_V6,
+        )
+        schema6_identity = {
+            "plan_sha256": superseded_plan_sha,
+            "report_sha256": superseded_report_sha,
+        }
     source_identity = coverage.verify_clean_source_commit(ROOT, _source_paths())
     _verify_git_ancestor(ROOT, plan["base_commit"])
     input_identity = {
@@ -165,6 +192,8 @@ def _validate_identities(plan_path: Path, plan_sha: str, previous_sha: str,
     }
     if superseded_identity is not None:
         input_identity["superseded_coverage_attempt"] = superseded_identity
+    if schema6_identity is not None:
+        input_identity["superseded_schema6_attempt"] = schema6_identity
     return {
         "dataset_path": str(path_map["dataset_sha256"]),
         "dataset_bytes": raws["dataset_sha256"],
@@ -689,8 +718,9 @@ def _initial_feasible_weights(reference, seed, domain, candidate_auditor,
 
 
 def _per_layout_objective_diagnostics(weights, rows, bases_torch, targets_torch,
-                                      beta, snapshot_id, deadline, progress_callback=None):
-    """Record per-layout losses/gradients and assert parity with the equal-weight objective."""
+                                      beta, snapshot_id, deadline, progress_callback=None,
+                                      optimization_layout_ids=None):
+    """Record seven-layout diagnostics and, for schema 7, parity for its subset objective."""
     layout_ids = [row["layout_id"] for row in rows]
     record = {
         "snapshot": snapshot_id, "beta": float(beta), "status": "in_progress",
@@ -715,6 +745,34 @@ def _per_layout_objective_diagnostics(weights, rows, bases_torch, targets_torch,
     aggregate_gradient = np.asarray(aggregate_gradient, dtype=np.float64)
     record["aggregate_loss"] = float(aggregate_loss)
     record["aggregate_gradient"] = aggregate_gradient.tolist()
+    if optimization_layout_ids is not None:
+        optimization_layout_ids = list(optimization_layout_ids)
+        if optimization_layout_ids != list(coverage.LAYOUT_IDS):
+            raise ValueError("schema-7 diagnostics require the registered new-three layout order")
+        if any(layout_id not in layout_ids for layout_id in optimization_layout_ids):
+            raise ValueError("optimization diagnostic layouts are not present in the all-FIT diagnostics")
+        if time.monotonic() >= deadline:
+            record["status"] = "timeout"
+            record["failure_reason"] = "deadline_before_optimization_aggregate_diagnostic"
+            notify()
+            return record
+        optimization_bases = {key: bases_torch[key] for key in optimization_layout_ids}
+        optimization_targets = {key: targets_torch[key] for key in optimization_layout_ids}
+        optimization_loss, optimization_gradient = critical_corner_softcount_value_gradient(
+            weights, optimization_bases, optimization_targets, beta,
+        )
+        optimization_gradient = np.asarray(optimization_gradient, dtype=np.float64)
+        record["aggregate_role"] = "all-seven comparison and common checkpoint ranking only"
+        record["optimization_objective_id"] = coverage.OBJECTIVE_ID_V7
+        record["optimization_layout_ids"] = optimization_layout_ids
+        record["optimization_objective_loss"] = float(optimization_loss)
+        record["optimization_objective_gradient"] = optimization_gradient.tolist()
+        notify()
+        if time.monotonic() >= deadline:
+            record["status"] = "timeout"
+            record["failure_reason"] = "deadline_after_optimization_aggregate_diagnostic"
+            notify()
+            return record
     notify()
     if time.monotonic() >= deadline:
         record["status"] = "timeout"
@@ -739,6 +797,7 @@ def _per_layout_objective_diagnostics(weights, rows, bases_torch, targets_torch,
         })
         notify()
     mean_loss = float(np.mean([row["softcount_loss"] for row in record["per_layout"]]))
+    per_layout_by_id = {row["layout_id"]: row for row in record["per_layout"]}
     mean_gradient = np.mean(
         np.stack([np.asarray(row["gradient"], dtype=np.float64)
                   for row in record["per_layout"]]), axis=0,
@@ -749,9 +808,32 @@ def _per_layout_objective_diagnostics(weights, rows, bases_torch, targets_torch,
     record["mean_gradient"] = mean_gradient.tolist()
     record["loss_parity_abs_error"] = float(loss_error)
     record["gradient_parity_max_abs_error"] = gradient_error
-    record["status"] = "complete" if max(loss_error, gradient_error) <= 1e-10 else "parity_failure"
+    parity_errors = [loss_error, gradient_error]
+    if optimization_layout_ids is not None:
+        objective_rows = [per_layout_by_id[key] for key in optimization_layout_ids]
+        objective_mean_loss = float(np.mean([row["softcount_loss"] for row in objective_rows]))
+        objective_mean_gradient = np.mean(
+            np.stack([np.asarray(row["gradient"], dtype=np.float64)
+                      for row in objective_rows]), axis=0,
+        )
+        objective_loss_error = abs(
+            objective_mean_loss - float(record["optimization_objective_loss"])
+        )
+        objective_gradient_error = float(np.max(np.abs(
+            objective_mean_gradient - np.asarray(record["optimization_objective_gradient"], dtype=np.float64)
+        ), initial=0.0))
+        record["optimization_mean_per_layout_loss"] = objective_mean_loss
+        record["optimization_mean_gradient"] = objective_mean_gradient.tolist()
+        record["optimization_loss_parity_abs_error"] = float(objective_loss_error)
+        record["optimization_gradient_parity_max_abs_error"] = objective_gradient_error
+        parity_errors.extend([objective_loss_error, objective_gradient_error])
+    record["status"] = "complete" if max(parity_errors) <= 1e-10 else "parity_failure"
     if record["status"] == "parity_failure":
-        record["failure_reason"] = "per_layout_mean_does_not_match_aggregate_objective"
+        record["failure_reason"] = (
+            "per_layout_mean_does_not_match_registered_aggregate_objective"
+            if optimization_layout_ids is not None
+            else "per_layout_mean_does_not_match_aggregate_objective"
+        )
     if time.monotonic() >= deadline:
         record["status"] = "timeout"
         record["failure_reason"] = "deadline_after_per_layout_diagnostics"
@@ -764,7 +846,10 @@ def _per_layout_objective_diagnostics(weights, rows, bases_torch, targets_torch,
 
 
 def _checkpoint_metrics(rows, old_rows, new_rows, basis32, weights, bases_torch,
-                        targets_torch, beta, anchor, reference, physical, order):
+                        targets_torch, beta, anchor, reference, physical, order,
+                        selection_bases_torch=None, selection_targets_torch=None,
+                        optimization_objective_id=None, optimization_layout_ids=None,
+                        selection_objective_layout_ids=None):
     all_eval = _evaluate_rows(rows, basis32, weights, physical)
     old_eval = _evaluate_rows(old_rows, basis32, weights, physical)
     new_eval = _evaluate_rows(new_rows, basis32, weights, physical)
@@ -777,8 +862,10 @@ def _checkpoint_metrics(rows, old_rows, new_rows, basis32, weights, bases_torch,
     training_objective = critical_corner_softcount_value(
         weights, bases_torch, targets_torch, beta
     )
+    selection_bases = bases_torch if selection_bases_torch is None else selection_bases_torch
+    selection_targets = targets_torch if selection_targets_torch is None else selection_targets_torch
     selection_objective = critical_corner_softcount_value(
-        weights, bases_torch, targets_torch, coverage.BETAS[-1]
+        weights, selection_bases, selection_targets, coverage.BETAS[-1]
     )
     guard_audit = coverage.audit_float32_critical_guards(
         basis32, {row["layout_id"]: row["target"] for row in rows},
@@ -786,7 +873,7 @@ def _checkpoint_metrics(rows, old_rows, new_rows, basis32, weights, bases_torch,
         [row["layout_id"] for row in old_rows],
         [row["layout_id"] for row in new_rows],
     )
-    return {
+    result = {
         "checkpoint_order": int(order), "beta": float(beta),
         "training_soft_objective": float(training_objective),
         "selection_soft_objective": float(selection_objective),
@@ -806,6 +893,12 @@ def _checkpoint_metrics(rows, old_rows, new_rows, basis32, weights, bases_torch,
         "l1_to_reference": float(np.abs(weights - reference).sum()),
         "weights": np.asarray(weights, dtype=np.float64).tolist(),
     }
+    if optimization_objective_id is not None:
+        result["training_objective_id"] = optimization_objective_id
+        result["training_objective_layout_ids"] = list(optimization_layout_ids or ())
+        result["selection_objective_id"] = coverage.OBJECTIVE_ID
+        result["selection_objective_layout_ids"] = list(selection_objective_layout_ids or ())
+    return result
 
 
 def _fit_checkpoint_qualified(row, new_reference_mean, original_poly, domain, weights):
@@ -848,7 +941,7 @@ def _run_seed(seed, ref, anchor, domain, all_rows, old_rows, new_rows,
               basis32, basis64, basis_torch, targets_torch, physical, new_reference_mean,
               seed_started, seed_deadline, checkpoint_callback, iteration_callback,
               initialization_protocol=None, diagnostics_protocol=None,
-              prior_starts=None):
+              prior_starts=None, objective_layout_ids=None):
     history, checkpoints, order = [], [], 0
     diagnostics = []
     iteration_sink = iteration_callback
@@ -1012,10 +1105,14 @@ def _run_seed(seed, ref, anchor, domain, all_rows, old_rows, new_rows,
                 publish_schema6("per_layout_diagnostic_progress", record)
 
             try:
+                diagnostic_options = {}
+                if objective_layout_ids is not None:
+                    diagnostic_options["optimization_layout_ids"] = objective_layout_ids
                 result = _per_layout_objective_diagnostics(
                     current, all_rows,
                     basis_torch, targets_torch, beta, snapshot_id,
                     seed_deadline, progress_callback=diagnostic_progress,
+                    **diagnostic_options,
                 )
             except Exception as exc:
                 result = {"snapshot": snapshot_id, "beta": float(beta),
@@ -1033,8 +1130,17 @@ def _run_seed(seed, ref, anchor, domain, all_rows, old_rows, new_rows,
                     "per_layout_diagnostics": diagnostics, "steps_completed": 0,
                     "history": history, "checkpoints": checkpoints,
                     "selected": None, "last_incumbent": last_incumbent}
-    bases_subset = {key: basis_torch[key] for key in [row["layout_id"] for row in all_rows]}
-    targets_subset = {key: targets_torch[key] for key in [row["layout_id"] for row in all_rows]}
+    all_layout_ids = [row["layout_id"] for row in all_rows]
+    if objective_layout_ids is None:
+        optimizer_layout_ids = all_layout_ids
+    else:
+        optimizer_layout_ids = list(objective_layout_ids)
+        if optimizer_layout_ids != list(coverage.LAYOUT_IDS):
+            raise ValueError("registered schema-7 optimizer layout order differs from new FIT layouts")
+    bases_subset = {key: basis_torch[key] for key in optimizer_layout_ids}
+    targets_subset = {key: targets_torch[key] for key in optimizer_layout_ids}
+    selection_bases = {key: basis_torch[key] for key in all_layout_ids}
+    selection_targets = {key: targets_torch[key] for key in all_layout_ids}
     for phase, beta in enumerate(coverage.BETAS):
         if diagnostics_protocol is not None and phase > 0:
             snapshot_id = "transition_beta_%d" % int(beta)
@@ -1211,6 +1317,9 @@ def _run_seed(seed, ref, anchor, domain, all_rows, old_rows, new_rows,
                 "weights_after": np.asarray(current, dtype=np.float64).tolist(),
                 "weights_after_sha256": coverage.sha256_array(np.asarray(current, dtype="<f8")),
             })
+            if objective_layout_ids is not None:
+                step_record["optimization_objective_id"] = coverage.OBJECTIVE_ID_V7
+                step_record["optimization_layout_ids"] = optimizer_layout_ids
             history.append(step_record)
             order += 1
             last_incumbent = _incumbent_snapshot(
@@ -1226,9 +1335,16 @@ def _run_seed(seed, ref, anchor, domain, all_rows, old_rows, new_rows,
                     [basis64[row["layout_id"]] for row in old_rows],
                     [row["target"] for row in old_rows], current,
                 )
+                checkpoint_objective_args = ()
+                if objective_layout_ids is not None:
+                    checkpoint_objective_args = (
+                        selection_bases, selection_targets,
+                        coverage.OBJECTIVE_ID_V7, optimizer_layout_ids, all_layout_ids,
+                    )
                 record = _checkpoint_metrics(
                     all_rows, old_rows, new_rows, basis32, current,
                     bases_subset, targets_subset, beta, anchor, ref, physical, order,
+                    *checkpoint_objective_args,
                 )
                 record = _fit_checkpoint_qualified(
                     record, new_reference_mean, poly, domain, current
@@ -1447,9 +1563,12 @@ def run(args) -> Path:
                              + "_" + uuid.uuid4().hex[:8])
     run_dir.mkdir(parents=True, exist_ok=False)
     report_path = run_dir / "coverage_report.json"
-    schema6 = plan.get("schema_version") == 6
+    schema_version = plan.get("schema_version")
+    schema_feasible_starts = schema_version in (6, 7)
+    schema7 = schema_version == 7
     report = {
-        "schema_version": 2 if schema6 else 1, "objective_id": coverage.OBJECTIVE_ID,
+        "schema_version": 3 if schema7 else (2 if schema_feasible_starts else 1),
+        "objective_id": plan.get("objective_id", coverage.OBJECTIVE_ID),
         "status": "preflight_complete", "created_utc": datetime.now(timezone.utc).isoformat(),
         "plan_sha256": plan_sha, "previous_report_sha256": coverage.PINNED_PREVIOUS_REPORT_SHA256,
         "input_hashes": plan["input_hashes"],
@@ -1460,11 +1579,15 @@ def run(args) -> Path:
         "calibration_status": "closed", "final3_status": "never indexed or evaluated",
         "seeds": [], "fit_frozen": False,
     }
-    if schema6:
+    if schema_feasible_starts:
         report["superseded_coverage_attempt"] = plan["superseded_coverage_attempt"]
         report["initialization_protocol"] = plan["initialization_protocol"]
         report["diagnostics_protocol"] = plan["diagnostics_protocol"]
         report["fixed_fit_layout_hashes"] = plan["fixed_fit_layout_hashes"]
+    if schema7:
+        report["superseded_schema6_attempt"] = plan["superseded_schema6_attempt"]
+        report["optimization_objective_protocol"] = plan["optimization_objective_protocol"]
+        report["optimization_diagnostics_protocol"] = plan["optimization_diagnostics_protocol"]
     _atomic_json(report_path, report)
     calibration_opened = False
     try:
@@ -1495,7 +1618,7 @@ def run(args) -> Path:
         novelty = _novelty_check(context["rows"], new_rows, plan["new_fit_generation"])
         if tuple(row["layout_id"] for row in new_rows) != coverage.LAYOUT_IDS:
             raise ValueError("new FIT layout IDs differ from the frozen plan")
-        if schema6:
+        if schema_feasible_starts:
             actual_fixed_hashes = [
                 {key: row[key] for key in ("layout_id", "mask_sha256", "target_sha256")}
                 for row in novelty
@@ -1626,12 +1749,15 @@ def run(args) -> Path:
             report["active_progress_path"] = str(progress_path)
             try:
                 seed_options = {}
-                if schema6:
+                if schema_feasible_starts:
                     seed_options = {
                         "initialization_protocol": plan["initialization_protocol"],
                         "diagnostics_protocol": plan["diagnostics_protocol"],
                         "prior_starts": accepted_starts,
                     }
+                if schema7:
+                    seed_options["objective_layout_ids"] = plan[
+                        "optimization_objective_protocol"]["layout_ids"]
                 result = _run_seed(
                     seed, reference, anchor, domain, all_rows, context["rows"], new_rows,
                     basis32, basis64, basis_torch, targets_torch, plan["physical"],
@@ -1668,7 +1794,7 @@ def run(args) -> Path:
                     "failure": {"type": type(seed_exc).__name__,
                                 "message": str(seed_exc), "traceback": seed_traceback},
                 }
-                if schema6:
+                if schema_feasible_starts:
                     seed_failure_record["initialization"] = partial_initialization
                     seed_failure_record["per_layout_diagnostics"] = partial_diagnostics
                 report["seeds"].append(seed_failure_record)
@@ -1682,7 +1808,7 @@ def run(args) -> Path:
                 _atomic_json(report_path, report)
                 raise
             initialization = result.get("initialization")
-            if (schema6 and isinstance(initialization, dict)
+            if (schema_feasible_starts and isinstance(initialization, dict)
                     and initialization.get("status") == "feasible_start_found"):
                 accepted_starts.append(np.asarray(initialization["weights"], dtype=np.float64))
                 result["accepted_start_index"] = len(accepted_starts)
