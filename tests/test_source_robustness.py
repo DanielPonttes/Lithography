@@ -20,6 +20,9 @@ from source_robustness import (
     explicit_worst_corner_squared_hinge_from_aerial,
     fit_objective_gradient_diagnostics,
     robust_corner_squared_hinge,
+    smooth_pv_from_aerial,
+    smooth_pv_value,
+    smooth_pv_value_gradient,
     signed_margin_quantiles,
     validate_nonnegative_bases,
     validate_rho,
@@ -30,6 +33,55 @@ from scripts import optimize_source_robust_corners as runner
 
 
 class RobustSourceObjectiveTests(unittest.TestCase):
+    def test_smooth_pv_aerial_matches_registered_dose_difference_formula(self):
+        aerial = torch.tensor([[0.19, 0.225], [0.26, 0.31]], dtype=torch.float64)
+        beta = 400.0
+        actual = smooth_pv_from_aerial(aerial, beta)
+        expected = (
+            torch.sigmoid(beta * (1.02 * aerial - 0.225))
+            - torch.sigmoid(beta * (0.98 * aerial - 0.225))
+        ).mean()
+        torch.testing.assert_close(actual, expected, rtol=0.0, atol=1e-15)
+        self.assertGreaterEqual(float(actual), 0.0)
+        self.assertLessEqual(float(actual), 1.0)
+
+    def test_smooth_pv_source_gradient_matches_finite_difference_and_value(self):
+        bases = {
+            "fit_a": torch.tensor(
+                [[[0.18, 0.22], [0.27, 0.31]],
+                 [[0.29, 0.24], [0.19, 0.33]],
+                 [[0.21, 0.30], [0.26, 0.17]]], dtype=torch.float64,
+            ),
+            "fit_b": torch.tensor(
+                [[[0.25, 0.16], [0.32, 0.23]],
+                 [[0.18, 0.35], [0.21, 0.28]],
+                 [[0.30, 0.22], [0.17, 0.26]]], dtype=torch.float64,
+            ),
+        }
+        weights = np.array([0.2, 0.35, 0.45], dtype=np.float64)
+        value, gradient = smooth_pv_value_gradient(weights, bases, beta=800.0)
+        self.assertAlmostEqual(value, smooth_pv_value(weights, bases, beta=800.0), places=14)
+        self.assertEqual(gradient.shape, weights.shape)
+        self.assertTrue(np.isfinite(gradient).all())
+        direction = np.array([1.0, -0.25, -0.75], dtype=np.float64)
+        epsilon = 1e-6
+        plus = smooth_pv_value(weights + epsilon * direction, bases, beta=800.0)
+        minus = smooth_pv_value(weights - epsilon * direction, bases, beta=800.0)
+        finite_difference = (plus - minus) / (2.0 * epsilon)
+        self.assertAlmostEqual(float(gradient @ direction), finite_difference, places=7)
+
+    def test_smooth_pv_rejects_invalid_temperature_doses_and_basis_shapes(self):
+        aerial = torch.ones((1, 2), dtype=torch.float64)
+        for beta in (0.0, -1.0, float("nan"), float("inf")):
+            with self.assertRaises(ValueError):
+                smooth_pv_from_aerial(aerial, beta)
+        with self.assertRaises(ValueError):
+            smooth_pv_from_aerial(aerial, 800.0, low_dose=1.02, high_dose=0.98)
+        with self.assertRaises(ValueError):
+            smooth_pv_value_gradient(
+                np.array([0.5, 0.5]), {"fit": torch.ones((3, 1, 2), dtype=torch.float64)}, 800.0
+            )
+
     def test_analytic_worst_corner_matches_min_dose_reference(self):
         aerial = torch.tensor(
             [[0.0, 0.12, 0.23], [0.31, 0.45, 0.7]],

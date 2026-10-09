@@ -468,6 +468,47 @@ class CoverageTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "schema-7 plan pin"):
                     coverage.validate_plan_file(plan_file, digest)
 
+        schema8 = copy.deepcopy(schema7)
+        schema8.update({
+            "schema_version": 8,
+            "objective_id": coverage.OBJECTIVE_ID_V8,
+            "base_commit": coverage.SCHEMA8_BASE_COMMIT,
+            "superseded_schema7_attempt": {
+                "status": "no_fit_qualified_checkpoint",
+                "plan_path": coverage.PINNED_SUPERSEDED_SCHEMA7_PLAN_PATH,
+                "plan_sha256": coverage.PINNED_PLAN_SHA256_V7,
+                "report_path": coverage.PINNED_SUPERSEDED_SCHEMA7_REPORT_PATH,
+                "report_sha256": coverage.PINNED_SUPERSEDED_SCHEMA7_REPORT_SHA256,
+            },
+            "optimization_objective_protocol": copy.deepcopy(
+                coverage.SCHEMA8_OPTIMIZATION_OBJECTIVE_PROTOCOL),
+            "optimization_diagnostics_protocol": copy.deepcopy(
+                coverage.SCHEMA8_OPTIMIZATION_DIAGNOSTICS_PROTOCOL),
+        })
+        schema8["protocol"]["objective"] = coverage.SCHEMA8_OBJECTIVE_DESCRIPTION
+        coverage.validate_plan_payload(schema8)
+        changed_v8 = copy.deepcopy(schema8)
+        changed_v8["optimization_objective_protocol"]["beta_schedule"] = [800.0]
+        with self.assertRaisesRegex(ValueError, "objective protocol"):
+            coverage.validate_plan_payload(changed_v8)
+        changed_v8 = copy.deepcopy(schema8)
+        changed_v8["superseded_schema7_attempt"]["report_sha256"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "consumed failed schema-7"):
+            coverage.validate_plan_payload(changed_v8)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_file = Path(tmp) / "schema8.json"
+            raw = json.dumps(schema8, indent=2, ensure_ascii=False,
+                             allow_nan=False).encode("utf-8")
+            plan_file.write_bytes(raw)
+            digest = hashlib.sha256(raw).hexdigest()
+            with patch.object(coverage, "PINNED_PLAN_SHA256_V8", digest):
+                _, actual = coverage.validate_plan_file(plan_file, digest)
+                self.assertEqual(actual, digest)
+                plan_file.write_bytes(raw + b" ")
+                with self.assertRaisesRegex(ValueError, "schema-8 plan SHA256"):
+                    coverage.validate_plan_file(plan_file, digest)
+
     def test_schema6_seeded_feasible_starts_are_deterministic_distinct_and_fail_closed(self):
         reference = np.array([1.0, 0.0, 0.0], dtype=np.float64)
 
@@ -719,6 +760,31 @@ class CoverageTests(unittest.TestCase):
         np.testing.assert_allclose(record["optimization_mean_gradient"], expected_gradient,
                                    rtol=0.0, atol=1e-12)
 
+    def test_schema8_smooth_pv_diagnostics_report_new_three_value_gradient_parity(self):
+        layout_ids = list(coverage.ORIGINAL_FIT_LAYOUT_IDS + coverage.LAYOUT_IDS)
+        rows, bases = [], {}
+        for index, layout_id in enumerate(layout_ids):
+            rows.append({"layout_id": layout_id})
+            bases[layout_id] = torch.full((49, 2, 2), 0.08 + index * 0.004,
+                                          dtype=torch.float64)
+        weights = np.full(49, 1.0 / 49.0, dtype=np.float64)
+        record = runner._per_layout_smooth_pv_diagnostics(
+            weights, rows, bases, 400.0, "transition_beta_400",
+            time.monotonic() + 5.0, coverage.LAYOUT_IDS,
+        )
+        self.assertEqual(record["status"], "complete")
+        self.assertEqual(record["objective_id"], coverage.OBJECTIVE_ID_V8)
+        self.assertEqual(record["layout_ids"], list(coverage.LAYOUT_IDS))
+        self.assertEqual([item["layout_id"] for item in record["per_layout"]],
+                         list(coverage.LAYOUT_IDS))
+        self.assertLessEqual(record["loss_parity_abs_error"], 1e-10)
+        self.assertLessEqual(record["gradient_parity_max_abs_error"], 1e-10)
+        with self.assertRaisesRegex(ValueError, "registered new-three"):
+            runner._per_layout_smooth_pv_diagnostics(
+                weights, rows, bases, 400.0, "bad_order", time.monotonic() + 5.0,
+                tuple(reversed(coverage.LAYOUT_IDS)),
+            )
+
     def test_superseded_attempt_validation_checks_closed_fit_boundary_only(self):
         report = {
             "schema_version": 1, "objective_id": coverage.OBJECTIVE_ID,
@@ -793,6 +859,67 @@ class CoverageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "seed FIT state"):
             coverage.validate_superseded_schema6_report(
                 qualified, coverage.PINNED_PLAN_SHA256_V6,
+            )
+
+    def test_schema7_report_validation_is_fit_only_and_fails_closed_on_mutation(self):
+        start_hashes = ["%064x" % index for index in range(1, len(coverage.SEEDS) + 1)]
+        seed_rows = []
+        for index, seed in enumerate(coverage.SEEDS, start=1):
+            seed_rows.append({
+                "seed": seed,
+                "status": "complete",
+                "steps_completed": coverage.STEPS_PER_SEED,
+                "qualified_checkpoint_count": 0,
+                "selected": None,
+                "initialization": {
+                    "status": "feasible_start_found", "fallback": False,
+                    "used_jitter": False, "weights_sha256": start_hashes[index - 1],
+                },
+                "accepted_start_index": index,
+                "accepted_start_hashes_in_order": start_hashes[:index],
+                "per_layout_diagnostics": [
+                    {"snapshot": snapshot, "status": "complete",
+                     "optimization_objective_id": coverage.OBJECTIVE_ID_V7,
+                     "optimization_layout_ids": list(coverage.LAYOUT_IDS)}
+                    for snapshot in coverage.SCHEMA6_DIAGNOSTICS_PROTOCOL["snapshots"]
+                ],
+                "history": [
+                    {"optimization_objective_id": coverage.OBJECTIVE_ID_V7,
+                     "optimization_layout_ids": list(coverage.LAYOUT_IDS)}
+                    for _ in range(coverage.STEPS_PER_SEED)
+                ],
+                "checkpoints": [{"qualified": False} for _ in range(11)],
+            })
+        report = {
+            "schema_version": 3,
+            "objective_id": coverage.OBJECTIVE_ID_V7,
+            "status": "no_fit_qualified_checkpoint",
+            "plan_sha256": coverage.PINNED_PLAN_SHA256_V7,
+            "coverage_attempt_consumed": True,
+            "calibration_status": "closed",
+            "final3_status": "never indexed or evaluated",
+            "fixed_fit_layout_hashes": copy.deepcopy(coverage.PINNED_FIXED_FIT_LAYOUT_HASHES),
+            "new_fit_layouts": copy.deepcopy(coverage.PINNED_FIXED_FIT_LAYOUT_HASHES),
+            "seeds": seed_rows,
+            # Calibration payloads are outside this FIT-lineage validator's inputs.
+            "calibration": {"arbitrary_unselected_value": "not used"},
+        }
+        coverage.validate_superseded_schema7_report(
+            report, coverage.PINNED_PLAN_SHA256_V7,
+        )
+
+        opened = copy.deepcopy(report)
+        opened["calibration_status"] = "opened_once_in_progress"
+        with self.assertRaisesRegex(ValueError, "closed failed FIT"):
+            coverage.validate_superseded_schema7_report(
+                opened, coverage.PINNED_PLAN_SHA256_V7,
+            )
+
+        mutated = copy.deepcopy(report)
+        mutated["seeds"][0]["history"][0]["optimization_objective_id"] = coverage.OBJECTIVE_ID
+        with self.assertRaisesRegex(ValueError, "seed FIT state"):
+            coverage.validate_superseded_schema7_report(
+                mutated, coverage.PINNED_PLAN_SHA256_V7,
             )
 
     def test_hash_uses_same_bytes_and_lineage_mutation_is_detected(self):
@@ -1479,6 +1606,206 @@ class CoverageTests(unittest.TestCase):
         self.assertEqual(record["training_soft_objective"], 3.4)
         self.assertEqual(record["selection_soft_objective"], 7.8)
         self.assertEqual(record["training_objective_id"], coverage.OBJECTIVE_ID_V7)
+        self.assertEqual(record["training_objective_layout_ids"], new_ids)
+        self.assertEqual(record["selection_objective_id"], coverage.OBJECTIVE_ID)
+        self.assertEqual(record["selection_objective_layout_ids"], ids)
+
+    def test_schema8_run_seed_uses_actual_armijo_for_new_three_smooth_pv(self):
+        reference = np.zeros(49, dtype=np.float64)
+        reference[0] = 1.0
+        start = reference.copy()
+        start[0], start[1] = 0.5, 0.5
+        vertex = np.zeros(49, dtype=np.float64)
+        vertex[1] = 1.0
+
+        class Domain:
+            def verify(self, weights):
+                return {"passed": True}
+
+        ids = list(coverage.ORIGINAL_FIT_LAYOUT_IDS + coverage.LAYOUT_IDS)
+        rows = [{"layout_id": key, "target": np.zeros((1, 1), dtype=bool)}
+                for key in ids]
+        arrays32 = {key: np.zeros((49, 1, 1), dtype=np.float32) for key in ids}
+        arrays64 = {key: value.astype(np.float64) for key, value in arrays32.items()}
+        tensors = {key: torch.zeros((49, 1, 1), dtype=torch.float64) for key in ids}
+        targets = {key: torch.zeros((1, 1), dtype=torch.bool) for key in ids}
+        critical_diagnostic_ids, smooth_diagnostic_ids = [], []
+        gradient_ids, armijo_ids, checkpoint_calls = [], [], []
+
+        def fake_init(_ref, seed, _domain, _auditor, _previous, _deadline,
+                      protocol=None, progress_callback=None):
+            record = {"algorithm": "schema6_seeded_feasible_lmo_mixtures",
+                      "seed": seed, "status": "feasible_start_found", "fallback": False,
+                      "weights": start.tolist(),
+                      "weights_sha256": coverage.sha256_array(np.asarray(start, dtype="<f8"))}
+            if progress_callback:
+                progress_callback(record)
+            return start.copy(), record
+
+        def fake_critical_diagnostic(_weights, diagnostic_rows, _bases, _targets, beta,
+                                     snapshot, _deadline, progress_callback=None,
+                                     optimization_layout_ids=None):
+            critical_diagnostic_ids.append(tuple(row["layout_id"] for row in diagnostic_rows))
+            self.assertIsNone(optimization_layout_ids)
+            record = {"snapshot": snapshot, "beta": beta, "status": "complete"}
+            if progress_callback:
+                progress_callback(record)
+            return record
+
+        def fake_smooth_diagnostic(_weights, _rows, _bases, _beta, snapshot, _deadline,
+                                   optimization_layout_ids, progress_callback=None):
+            smooth_diagnostic_ids.append(tuple(optimization_layout_ids))
+            record = {"snapshot": snapshot, "status": "complete",
+                      "objective_id": coverage.OBJECTIVE_ID_V8}
+            if progress_callback:
+                progress_callback(record)
+            return record
+
+        def fake_gradient(weights, bases, beta):
+            gradient_ids.append(tuple(bases))
+            gradient = np.zeros(49, dtype=np.float64)
+            if weights[0] > 0.01:
+                gradient[0] = 1.0
+            return float(weights[0]), gradient
+
+        def fake_smooth_value(weights, bases, beta):
+            armijo_ids.append((tuple(bases), beta))
+            return float(weights[0])
+
+        def fake_lmo(_domain, gradient, _deadline):
+            return {"status": "optimal_verified", "weights": vertex.copy(),
+                    "objective_value": float(gradient @ vertex),
+                    "record": {"status_code": 0}}
+
+        def fake_checkpoint(*args, **kwargs):
+            checkpoint_calls.append((args, kwargs))
+            return {"checkpoint_order": int(args[11])}
+
+        with patch.object(runner.time, "monotonic", return_value=1000.0), \
+             patch.object(runner, "_initial_feasible_weights", side_effect=fake_init), \
+             patch.object(runner, "_per_layout_objective_diagnostics",
+                          side_effect=fake_critical_diagnostic), \
+             patch.object(runner, "_per_layout_smooth_pv_diagnostics",
+                          side_effect=fake_smooth_diagnostic), \
+             patch.object(runner, "smooth_pv_value_gradient", side_effect=fake_gradient), \
+             patch.object(runner, "smooth_pv_value", side_effect=fake_smooth_value), \
+             patch.object(runner, "_linprog_lmo", side_effect=fake_lmo), \
+             patch.object(runner, "_checkpoint_metrics", side_effect=fake_checkpoint), \
+             patch.object(runner, "_fit_checkpoint_qualified",
+                          side_effect=lambda row, *_: {**row, "qualified": False}), \
+             patch.object(coverage, "verify_original_nominal_polytope",
+                          return_value={"passed": True}):
+            result = runner._run_seed(
+                17, reference, reference, Domain(), rows, rows[:4], rows[4:],
+                arrays32, arrays64, tensors, targets, {}, {}, 1000.0, 2000.0,
+                lambda *_: None, lambda *_: None,
+                initialization_protocol=coverage.SCHEMA6_INITIALIZATION_PROTOCOL,
+                diagnostics_protocol=coverage.SCHEMA6_DIAGNOSTICS_PROTOCOL,
+                prior_starts=[], objective_layout_ids=coverage.LAYOUT_IDS,
+                optimization_objective_id=coverage.OBJECTIVE_ID_V8,
+                optimization_objective_kind="smooth_pv",
+                optimization_diagnostics_protocol=coverage.SCHEMA8_OPTIMIZATION_DIAGNOSTICS_PROTOCOL,
+            )
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["steps_completed"], coverage.STEPS_PER_SEED)
+        self.assertTrue(all(keys == tuple(ids) for keys in critical_diagnostic_ids))
+        self.assertEqual(smooth_diagnostic_ids,
+                         [tuple(coverage.LAYOUT_IDS)] * len(coverage.SCHEMA6_DIAGNOSTICS_PROTOCOL["snapshots"]))
+        self.assertEqual(len(gradient_ids), coverage.STEPS_PER_SEED)
+        self.assertTrue(all(keys == tuple(coverage.LAYOUT_IDS) for keys in gradient_ids))
+        self.assertEqual(armijo_ids, [(tuple(coverage.LAYOUT_IDS), 200.0)])
+        self.assertEqual(result["history"][0]["status"], "accepted")
+        self.assertEqual(result["history"][0]["line_search"]["gamma"], 1.0)
+        self.assertEqual(result["history"][0]["optimization_objective_id"],
+                         coverage.OBJECTIVE_ID_V8)
+        self.assertTrue(all(row["status"] == "stationary_tolerance"
+                            for row in result["history"][1:]))
+        self.assertEqual(len(checkpoint_calls), 11)
+        first_args, first_kwargs = checkpoint_calls[0]
+        self.assertEqual(tuple(first_args[5]), tuple(coverage.LAYOUT_IDS))
+        self.assertEqual(tuple(first_args[12]), tuple(ids))
+        self.assertEqual(first_args[14], coverage.OBJECTIVE_ID_V8)
+        self.assertEqual(first_args[15], list(coverage.LAYOUT_IDS))
+        self.assertEqual(first_args[16], ids)
+        self.assertEqual(first_kwargs["training_objective_kind"], "smooth_pv")
+
+    def test_schema8_real_smooth_pv_gradient_and_armijo_accept_for_all_betas(self):
+        current = np.zeros(49, dtype=np.float64)
+        current[0] = 1.0
+        vertex = np.zeros(49, dtype=np.float64)
+        vertex[1] = 1.0
+        bases = {}
+        for layout_id in coverage.LAYOUT_IDS:
+            basis = torch.zeros((49, 1, 1), dtype=torch.float64)
+            basis[0, 0, 0] = 0.25
+            basis[1, 0, 0] = 0.60
+            bases[layout_id] = basis
+
+        for beta in coverage.BETAS:
+            with self.subTest(beta=beta):
+                loss, gradient = runner.smooth_pv_value_gradient(current, bases, beta)
+                gap = float(gradient @ (current - vertex))
+                self.assertGreater(gap, 0.0)
+                trial_value = lambda weights, trial_bases, _targets, trial_beta: runner.smooth_pv_value(
+                    weights, trial_bases, trial_beta,
+                )
+                line = runner._armijo(
+                    current, vertex, loss, gap, bases, {}, beta,
+                    time.monotonic() + 5.0,
+                    objective_value_function=trial_value,
+                )
+                self.assertTrue(line["accepted"])
+                self.assertLess(line["value"], loss)
+                weights_after = np.asarray(line["weights"], dtype=np.float64)
+                self.assertTrue(np.isfinite(weights_after).all())
+                self.assertTrue((weights_after >= 0.0).all())
+                self.assertAlmostEqual(float(weights_after.sum()), 1.0, places=14)
+                self.assertLess(
+                    runner.smooth_pv_value(weights_after, bases, beta), loss,
+                )
+
+    def test_schema8_checkpoint_trains_smooth_pv_but_selects_all_seven_critical_softcount(self):
+        ids = list(coverage.ORIGINAL_FIT_LAYOUT_IDS + coverage.LAYOUT_IDS)
+        new_ids = list(coverage.LAYOUT_IDS)
+        metrics = {"mean": {"band_pixels": 0.0, "L2_pixels": 0.0,
+                            "L2_worst_dose_pixels": 0.0},
+                   "no_blank_positive_target_any_dose": True}
+        calls = []
+
+        def fake_critical(_weights, bases, _targets, beta):
+            calls.append(("critical", tuple(bases), beta))
+            return float(len(bases)) + beta / 1000.0
+
+        def fake_smooth(_weights, bases, beta):
+            calls.append(("smooth", tuple(bases), beta))
+            return 0.25 + beta / 10000.0
+
+        all_bases = {key: object() for key in ids}
+        all_targets = {key: object() for key in ids}
+        new_bases = {key: all_bases[key] for key in new_ids}
+        new_targets = {key: all_targets[key] for key in new_ids}
+        rows = [{"layout_id": key, "target": np.zeros((1, 1), dtype=bool)} for key in ids]
+        with patch.object(runner, "_evaluate_rows", return_value=metrics), \
+             patch.object(coverage, "audit_float32_critical_guards",
+                          return_value={"passed": True}), \
+             patch.object(runner, "smooth_pv_value", side_effect=fake_smooth), \
+             patch.object(runner, "critical_corner_softcount_value", side_effect=fake_critical):
+            record = runner._checkpoint_metrics(
+                rows, rows[:4], rows[4:], {}, np.full(49, 1.0 / 49),
+                new_bases, new_targets, 400.0, np.full(49, 1.0 / 49),
+                np.full(49, 1.0 / 49), {}, 25,
+                all_bases, all_targets, coverage.OBJECTIVE_ID_V8, new_ids, ids,
+                training_objective_kind="smooth_pv",
+            )
+        self.assertEqual(calls, [
+            ("smooth", tuple(new_ids), 400.0),
+            ("critical", tuple(ids), 800.0),
+        ])
+        self.assertEqual(record["training_smooth_pv_objective"], 0.29)
+        self.assertNotIn("training_soft_objective", record)
+        self.assertEqual(record["selection_soft_objective"], 7.8)
+        self.assertEqual(record["training_objective_id"], coverage.OBJECTIVE_ID_V8)
         self.assertEqual(record["training_objective_layout_ids"], new_ids)
         self.assertEqual(record["selection_objective_id"], coverage.OBJECTIVE_ID)
         self.assertEqual(record["selection_objective_layout_ids"], ids)

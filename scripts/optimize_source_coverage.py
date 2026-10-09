@@ -35,6 +35,8 @@ from light_source import DifferentiableAbbeLitho, PixelatedLightSource, resist_i
 from source_robustness import (
     critical_corner_softcount_value,
     critical_corner_softcount_value_gradient,
+    smooth_pv_value,
+    smooth_pv_value_gradient,
 )
 from source_training import SourceDataset
 
@@ -131,7 +133,7 @@ def _validate_identities(plan_path: Path, plan_sha: str, previous_sha: str,
         raise ValueError("previous Pareto plan no longer matches the required SHA256")
     previous = coverage.validate_previous_report(previous_report)
     superseded_identity = None
-    if plan.get("schema_version") in (6, 7):
+    if plan.get("schema_version") in (6, 7, 8):
         superseded = plan["superseded_coverage_attempt"]
         superseded_plan_path = _absolute_file(
             superseded["plan_path"], "superseded_coverage_attempt.plan_path",
@@ -157,7 +159,7 @@ def _validate_identities(plan_path: Path, plan_sha: str, previous_sha: str,
             "report_sha256": coverage.PINNED_SUPERSEDED_COVERAGE_REPORT_SHA256,
         }
     schema6_identity = None
-    if plan.get("schema_version") == 7:
+    if plan.get("schema_version") in (7, 8):
         superseded = plan["superseded_schema6_attempt"]
         superseded_plan_path = _absolute_file(
             superseded["plan_path"], "superseded_schema6_attempt.plan_path",
@@ -183,6 +185,33 @@ def _validate_identities(plan_path: Path, plan_sha: str, previous_sha: str,
             "plan_sha256": superseded_plan_sha,
             "report_sha256": superseded_report_sha,
         }
+    schema7_identity = None
+    if plan.get("schema_version") == 8:
+        superseded = plan["superseded_schema7_attempt"]
+        superseded_plan_path = _absolute_file(
+            superseded["plan_path"], "superseded_schema7_attempt.plan_path",
+        )
+        superseded_report_path = _absolute_file(
+            superseded["report_path"], "superseded_schema7_attempt.report_path",
+        )
+        superseded_plan, superseded_plan_sha = coverage.validate_plan_file(
+            superseded_plan_path, coverage.PINNED_PLAN_SHA256_V7,
+        )
+        if (superseded_plan.get("schema_version") != 7
+                or superseded_plan_sha != superseded["plan_sha256"]):
+            raise ValueError("superseded schema-7 plan differs from its frozen pin")
+        superseded_report, _superseded_report_bytes, superseded_report_sha = _read_hashed_json(
+            superseded_report_path
+        )
+        if superseded_report_sha != superseded["report_sha256"]:
+            raise ValueError("superseded schema-7 FIT report differs from its frozen pin")
+        coverage.validate_superseded_schema7_report(
+            superseded_report, coverage.PINNED_PLAN_SHA256_V7,
+        )
+        schema7_identity = {
+            "plan_sha256": superseded_plan_sha,
+            "report_sha256": superseded_report_sha,
+        }
     source_identity = coverage.verify_clean_source_commit(ROOT, _source_paths())
     _verify_git_ancestor(ROOT, plan["base_commit"])
     input_identity = {
@@ -194,6 +223,8 @@ def _validate_identities(plan_path: Path, plan_sha: str, previous_sha: str,
         input_identity["superseded_coverage_attempt"] = superseded_identity
     if schema6_identity is not None:
         input_identity["superseded_schema6_attempt"] = schema6_identity
+    if schema7_identity is not None:
+        input_identity["superseded_schema7_attempt"] = schema7_identity
     return {
         "dataset_path": str(path_map["dataset_sha256"]),
         "dataset_bytes": raws["dataset_sha256"],
@@ -471,14 +502,16 @@ def _linprog_lmo(domain, gradient, deadline: float) -> dict:
             "record": record, "residual": residual}
 
 
-def _armijo(current, vertex, loss, gap, bases, targets, beta, deadline):
+def _armijo(current, vertex, loss, gap, bases, targets, beta, deadline,
+            objective_value_function=None):
     gamma = 1.0
     evaluations = 0
+    objective_value_function = objective_value_function or critical_corner_softcount_value
     while gamma >= 2.0 ** -24:
         if time.monotonic() >= deadline:
             return {"accepted": False, "timed_out": True, "evaluations": evaluations}
         trial = current + gamma * (vertex - current)
-        value = critical_corner_softcount_value(trial, bases, targets, beta)
+        value = objective_value_function(trial, bases, targets, beta)
         evaluations += 1
         if math.isfinite(value) and value <= loss - 1e-4 * gamma * gap:
             return {"accepted": True, "gamma": gamma, "value": value,
@@ -845,11 +878,86 @@ def _per_layout_objective_diagnostics(weights, rows, bases_torch, targets_torch,
     return record
 
 
+def _per_layout_smooth_pv_diagnostics(weights, rows, bases_torch, beta,
+                                      snapshot_id, deadline,
+                                      optimization_layout_ids,
+                                      progress_callback=None):
+    """Check new-three smooth-PV value/gradient parity separately from softcount."""
+    layout_ids = [row["layout_id"] for row in rows]
+    optimization_layout_ids = list(optimization_layout_ids or ())
+    if optimization_layout_ids != list(coverage.LAYOUT_IDS):
+        raise ValueError("schema-8 smooth-PV diagnostics require the registered new-three layout order")
+    if any(layout_id not in layout_ids for layout_id in optimization_layout_ids):
+        raise ValueError("smooth-PV diagnostic layouts are not present in the FIT rows")
+    record = {
+        "snapshot": snapshot_id, "beta": float(beta), "status": "in_progress",
+        "objective_id": coverage.OBJECTIVE_ID_V8,
+        "metric": "smooth_pv_loss",
+        "layout_ids": optimization_layout_ids,
+        "per_layout": [], "parity_tolerance": 1e-10,
+        "role": "new-three optimizer objective; distinct from critical-softcount comparison diagnostics",
+    }
+
+    def notify() -> None:
+        if progress_callback is not None:
+            progress_callback(record)
+
+    if time.monotonic() >= deadline:
+        record.update(status="timeout", failure_reason="deadline_before_smooth_pv_aggregate")
+        notify()
+        return record
+    bases = {key: bases_torch[key] for key in optimization_layout_ids}
+    aggregate_loss, aggregate_gradient = smooth_pv_value_gradient(weights, bases, beta)
+    aggregate_gradient = np.asarray(aggregate_gradient, dtype=np.float64)
+    record["aggregate_smooth_pv_loss"] = float(aggregate_loss)
+    record["aggregate_gradient"] = aggregate_gradient.tolist()
+    notify()
+    if time.monotonic() >= deadline:
+        record.update(status="timeout", failure_reason="deadline_after_smooth_pv_aggregate")
+        notify()
+        return record
+    for layout_id in optimization_layout_ids:
+        if time.monotonic() >= deadline:
+            record.update(status="timeout", failure_reason="deadline_during_smooth_pv_per_layout")
+            notify()
+            return record
+        loss, gradient = smooth_pv_value_gradient(
+            weights, {layout_id: bases_torch[layout_id]}, beta,
+        )
+        gradient = np.asarray(gradient, dtype=np.float64)
+        record["per_layout"].append({
+            "layout_id": layout_id, "smooth_pv_loss": float(loss),
+            "gradient": gradient.tolist(),
+            "gradient_l2_norm": float(np.linalg.norm(gradient)),
+        })
+        notify()
+    mean_loss = float(np.mean([row["smooth_pv_loss"] for row in record["per_layout"]]))
+    mean_gradient = np.mean(
+        np.stack([np.asarray(row["gradient"], dtype=np.float64)
+                  for row in record["per_layout"]]), axis=0,
+    )
+    loss_error = abs(mean_loss - float(aggregate_loss))
+    gradient_error = float(np.max(np.abs(mean_gradient - aggregate_gradient), initial=0.0))
+    record["mean_smooth_pv_loss"] = mean_loss
+    record["mean_gradient"] = mean_gradient.tolist()
+    record["loss_parity_abs_error"] = float(loss_error)
+    record["gradient_parity_max_abs_error"] = gradient_error
+    record["status"] = "complete" if max(loss_error, gradient_error) <= 1e-10 else "parity_failure"
+    if record["status"] == "parity_failure":
+        record["failure_reason"] = "new-three per-layout smooth-PV mean differs from aggregate value/gradient"
+    notify()
+    if time.monotonic() >= deadline and record["status"] == "complete":
+        record.update(status="timeout", failure_reason="deadline_after_smooth_pv_diagnostic")
+        notify()
+    return record
+
+
 def _checkpoint_metrics(rows, old_rows, new_rows, basis32, weights, bases_torch,
                         targets_torch, beta, anchor, reference, physical, order,
                         selection_bases_torch=None, selection_targets_torch=None,
                         optimization_objective_id=None, optimization_layout_ids=None,
-                        selection_objective_layout_ids=None):
+                        selection_objective_layout_ids=None,
+                        training_objective_kind=None):
     all_eval = _evaluate_rows(rows, basis32, weights, physical)
     old_eval = _evaluate_rows(old_rows, basis32, weights, physical)
     new_eval = _evaluate_rows(new_rows, basis32, weights, physical)
@@ -859,9 +967,14 @@ def _checkpoint_metrics(rows, old_rows, new_rows, basis32, weights, bases_torch,
         and old_eval["mean"]["L2_worst_dose_pixels"] <= 150.25
         and old_eval["no_blank_positive_target_any_dose"]
     )
-    training_objective = critical_corner_softcount_value(
-        weights, bases_torch, targets_torch, beta
-    )
+    if training_objective_kind == "smooth_pv":
+        training_objective = smooth_pv_value(weights, bases_torch, beta)
+    elif training_objective_kind is None:
+        training_objective = critical_corner_softcount_value(
+            weights, bases_torch, targets_torch, beta
+        )
+    else:
+        raise ValueError("unsupported checkpoint training objective kind")
     selection_bases = bases_torch if selection_bases_torch is None else selection_bases_torch
     selection_targets = targets_torch if selection_targets_torch is None else selection_targets_torch
     selection_objective = critical_corner_softcount_value(
@@ -875,7 +988,6 @@ def _checkpoint_metrics(rows, old_rows, new_rows, basis32, weights, bases_torch,
     )
     result = {
         "checkpoint_order": int(order), "beta": float(beta),
-        "training_soft_objective": float(training_objective),
         "selection_soft_objective": float(selection_objective),
         "selection_soft_objective_beta": float(coverage.BETAS[-1]),
         "all_fit": all_eval, "original_fit_mean": old_eval["mean"],
@@ -893,6 +1005,10 @@ def _checkpoint_metrics(rows, old_rows, new_rows, basis32, weights, bases_torch,
         "l1_to_reference": float(np.abs(weights - reference).sum()),
         "weights": np.asarray(weights, dtype=np.float64).tolist(),
     }
+    if training_objective_kind == "smooth_pv":
+        result["training_smooth_pv_objective"] = float(training_objective)
+    else:
+        result["training_soft_objective"] = float(training_objective)
     if optimization_objective_id is not None:
         result["training_objective_id"] = optimization_objective_id
         result["training_objective_layout_ids"] = list(optimization_layout_ids or ())
@@ -941,9 +1057,22 @@ def _run_seed(seed, ref, anchor, domain, all_rows, old_rows, new_rows,
               basis32, basis64, basis_torch, targets_torch, physical, new_reference_mean,
               seed_started, seed_deadline, checkpoint_callback, iteration_callback,
               initialization_protocol=None, diagnostics_protocol=None,
-              prior_starts=None, objective_layout_ids=None):
+              prior_starts=None, objective_layout_ids=None,
+              optimization_objective_id=None, optimization_objective_kind=None,
+              optimization_diagnostics_protocol=None):
     history, checkpoints, order = [], [], 0
     diagnostics = []
+    optimization_diagnostics = []
+    if optimization_objective_kind not in (None, "smooth_pv"):
+        raise ValueError("unsupported source coverage optimization objective kind")
+    if optimization_objective_kind == "smooth_pv":
+        if (optimization_objective_id != coverage.OBJECTIVE_ID_V8
+                or objective_layout_ids is None
+                or list(objective_layout_ids) != list(coverage.LAYOUT_IDS)
+                or optimization_diagnostics_protocol != coverage.SCHEMA8_OPTIMIZATION_DIAGNOSTICS_PROTOCOL):
+            raise ValueError("schema-8 smooth-PV objective arguments differ from their frozen protocol")
+    elif optimization_objective_id is not None:
+        raise ValueError("a non-schema-8 objective ID cannot alter the legacy softcount path")
     iteration_sink = iteration_callback
 
     def iteration_callback(snapshot, current_history, current_checkpoints):
@@ -955,6 +1084,8 @@ def _run_seed(seed, ref, anchor, domain, all_rows, old_rows, new_rows,
                     "initialization": init_record,
                     "per_layout_diagnostics": diagnostics,
                 }
+                if optimization_objective_kind == "smooth_pv":
+                    snapshot["details"]["optimization_objective_diagnostics"] = optimization_diagnostics
         iteration_sink(snapshot, current_history, current_checkpoints)
 
     if initialization_protocol is None:
@@ -988,6 +1119,8 @@ def _run_seed(seed, ref, anchor, domain, all_rows, old_rows, new_rows,
             "status": "searching", "fallback": False, "used_jitter": False,
             "per_layout_diagnostics": diagnostics,
         }
+        if optimization_objective_kind == "smooth_pv":
+            init_state["optimization_objective_diagnostics"] = optimization_diagnostics
         init_record = init_state
         last_incumbent = _incumbent_snapshot(
             seed, current, 0, None, None, None, seed_started,
@@ -999,6 +1132,8 @@ def _run_seed(seed, ref, anchor, domain, all_rows, old_rows, new_rows,
             nonlocal last_incumbent
             details = {"initialization": init_record,
                        "per_layout_diagnostics": diagnostics}
+            if optimization_objective_kind == "smooth_pv":
+                details["optimization_objective_diagnostics"] = optimization_diagnostics
             if active_diagnostic is not None:
                 details["active_per_layout_diagnostic"] = active_diagnostic
             last_incumbent = _incumbent_snapshot(
@@ -1011,6 +1146,8 @@ def _run_seed(seed, ref, anchor, domain, all_rows, old_rows, new_rows,
             init_state.clear()
             init_state.update(record)
             init_state["per_layout_diagnostics"] = diagnostics
+            if optimization_objective_kind == "smooth_pv":
+                init_state["optimization_objective_diagnostics"] = optimization_diagnostics
             publish_schema6("feasible_start_search_progress")
 
         init_deadline = min(
@@ -1064,18 +1201,24 @@ def _run_seed(seed, ref, anchor, domain, all_rows, old_rows, new_rows,
         if current is None:
             status = "timeout" if init_record.get("status") == "timeout" else "initialization_failed"
             publish_schema6("feasible_start_search_failed")
-            return {"seed": seed, "status": status, "initialization": init_record,
+            failed = {"seed": seed, "status": status, "initialization": init_record,
                     "per_layout_diagnostics": diagnostics, "steps_completed": 0,
                     "history": history, "checkpoints": checkpoints,
                     "selected": None, "last_incumbent": last_incumbent}
+            if optimization_diagnostics_protocol is not None:
+                failed["optimization_objective_diagnostics"] = optimization_diagnostics
+            return failed
         current = np.asarray(current, dtype=np.float64)
         if time.monotonic() >= seed_deadline:
             init_record["status"] = "timeout_after_feasible_start"
             publish_schema6("deadline_after_feasible_start")
-            return {"seed": seed, "status": "timeout", "initialization": init_record,
+            failed = {"seed": seed, "status": "timeout", "initialization": init_record,
                     "per_layout_diagnostics": diagnostics, "steps_completed": 0,
                     "history": history, "checkpoints": checkpoints,
                     "selected": None, "last_incumbent": last_incumbent}
+            if optimization_diagnostics_protocol is not None:
+                failed["optimization_objective_diagnostics"] = optimization_diagnostics
+            return failed
         initial_poly = coverage.verify_original_nominal_polytope(
             [basis64[row["layout_id"]] for row in old_rows],
             [row["target"] for row in old_rows], current,
@@ -1088,11 +1231,14 @@ def _run_seed(seed, ref, anchor, domain, all_rows, old_rows, new_rows,
                 "guard_domain": initial_domain,
             }
             publish_schema6("accepted_start_recheck_failed")
-            return {"seed": seed, "status": "initialization_failed",
+            failed = {"seed": seed, "status": "initialization_failed",
                     "initialization": init_record, "per_layout_diagnostics": diagnostics,
                     "steps_completed": 0, "history": history,
                     "checkpoints": checkpoints, "selected": None,
                     "last_incumbent": last_incumbent}
+            if optimization_diagnostics_protocol is not None:
+                failed["optimization_objective_diagnostics"] = optimization_diagnostics
+            return failed
         publish_schema6("warm_start_feasible")
 
         def run_diagnostic(snapshot_id, beta):
@@ -1106,7 +1252,8 @@ def _run_seed(seed, ref, anchor, domain, all_rows, old_rows, new_rows,
 
             try:
                 diagnostic_options = {}
-                if objective_layout_ids is not None:
+                if (objective_layout_ids is not None
+                        and optimization_objective_kind != "smooth_pv"):
                     diagnostic_options["optimization_layout_ids"] = objective_layout_ids
                 result = _per_layout_objective_diagnostics(
                     current, all_rows,
@@ -1121,22 +1268,58 @@ def _run_seed(seed, ref, anchor, domain, all_rows, old_rows, new_rows,
             diagnostics.append(result)
             init_record.pop("active_per_layout_diagnostic", None)
             publish_schema6("per_layout_diagnostic_finished", result)
+            if optimization_objective_kind == "smooth_pv":
+                active_objective = {
+                    "snapshot": snapshot_id, "beta": float(beta), "status": "starting",
+                    "objective_id": coverage.OBJECTIVE_ID_V8,
+                }
+                init_record["active_optimization_objective_diagnostic"] = active_objective
+                publish_schema6("smooth_pv_diagnostic_started", active_objective)
+
+                def smooth_progress(record):
+                    init_record["active_optimization_objective_diagnostic"] = record
+                    publish_schema6("smooth_pv_diagnostic_progress", record)
+
+                try:
+                    smooth_result = _per_layout_smooth_pv_diagnostics(
+                        current, all_rows, basis_torch, beta, snapshot_id,
+                        seed_deadline, objective_layout_ids,
+                        progress_callback=smooth_progress,
+                    )
+                except Exception as exc:
+                    smooth_result = {
+                        "snapshot": snapshot_id, "beta": float(beta),
+                        "objective_id": coverage.OBJECTIVE_ID_V8,
+                        "status": "exception", "failure_reason": str(exc),
+                        "failure_type": type(exc).__name__,
+                    }
+                optimization_diagnostics.append(smooth_result)
+                init_record.pop("active_optimization_objective_diagnostic", None)
+                publish_schema6("smooth_pv_diagnostic_finished", smooth_result)
+                if smooth_result.get("status") != "complete":
+                    return {
+                        "status": smooth_result.get("status"),
+                        "failure_reason": smooth_result.get("failure_reason"),
+                    }
             return result
 
         first_diagnostic = run_diagnostic("initial_beta_200", coverage.BETAS[0])
         if first_diagnostic.get("status") != "complete":
             status = "timeout" if first_diagnostic.get("status") == "timeout" else "diagnostics_failure"
-            return {"seed": seed, "status": status, "initialization": init_record,
+            failed = {"seed": seed, "status": status, "initialization": init_record,
                     "per_layout_diagnostics": diagnostics, "steps_completed": 0,
                     "history": history, "checkpoints": checkpoints,
                     "selected": None, "last_incumbent": last_incumbent}
+            if optimization_diagnostics_protocol is not None:
+                failed["optimization_objective_diagnostics"] = optimization_diagnostics
+            return failed
     all_layout_ids = [row["layout_id"] for row in all_rows]
     if objective_layout_ids is None:
         optimizer_layout_ids = all_layout_ids
     else:
         optimizer_layout_ids = list(objective_layout_ids)
         if optimizer_layout_ids != list(coverage.LAYOUT_IDS):
-            raise ValueError("registered schema-7 optimizer layout order differs from new FIT layouts")
+            raise ValueError("registered new-three optimizer layout order differs from new FIT layouts")
     bases_subset = {key: basis_torch[key] for key in optimizer_layout_ids}
     targets_subset = {key: targets_torch[key] for key in optimizer_layout_ids}
     selection_bases = {key: basis_torch[key] for key in all_layout_ids}
@@ -1147,10 +1330,13 @@ def _run_seed(seed, ref, anchor, domain, all_rows, old_rows, new_rows,
             boundary_diagnostic = run_diagnostic(snapshot_id, beta)
             if boundary_diagnostic.get("status") != "complete":
                 status = "timeout" if boundary_diagnostic.get("status") == "timeout" else "diagnostics_failure"
-                return {"seed": seed, "status": status, "initialization": init_record,
+                failed = {"seed": seed, "status": status, "initialization": init_record,
                         "per_layout_diagnostics": diagnostics, "steps_completed": len(history),
                         "history": history, "checkpoints": checkpoints,
                         "selected": None, "last_incumbent": last_incumbent}
+                if optimization_diagnostics_protocol is not None:
+                    failed["optimization_objective_diagnostics"] = optimization_diagnostics
+                return failed
         for local_step in range(coverage.STEPS_PER_BETA):
             if time.monotonic() >= seed_deadline:
                 last_incumbent = _incumbent_snapshot(
@@ -1163,9 +1349,14 @@ def _run_seed(seed, ref, anchor, domain, all_rows, old_rows, new_rows,
                         "checkpoints": checkpoints, "selected": None,
                         "last_incumbent": last_incumbent}
             try:
-                loss, gradient = critical_corner_softcount_value_gradient(
-                    current, bases_subset, targets_subset, beta
-                )
+                if optimization_objective_kind == "smooth_pv":
+                    loss, gradient = smooth_pv_value_gradient(
+                        current, bases_subset, beta,
+                    )
+                else:
+                    loss, gradient = critical_corner_softcount_value_gradient(
+                        current, bases_subset, targets_subset, beta
+                    )
             except Exception as exc:
                 last_incumbent = _incumbent_snapshot(
                     seed, current, len(history), phase, local_step, beta,
@@ -1252,8 +1443,18 @@ def _run_seed(seed, ref, anchor, domain, all_rows, old_rows, new_rows,
                                "lmo": lmo["record"]}
             else:
                 try:
-                    line = _armijo(current, vertex, loss, gap, bases_subset,
-                                   targets_subset, beta, seed_deadline)
+                    if optimization_objective_kind == "smooth_pv":
+                        line = _armijo(
+                            current, vertex, loss, gap, bases_subset,
+                            targets_subset, beta, seed_deadline,
+                            objective_value_function=lambda trial, trial_bases, _trial_targets, trial_beta: smooth_pv_value(
+                                trial, trial_bases, trial_beta,
+                            ),
+                        )
+                    else:
+                        # Preserve the legacy schema-5/6/7 call contract exactly.
+                        line = _armijo(current, vertex, loss, gap, bases_subset,
+                                       targets_subset, beta, seed_deadline)
                 except Exception as exc:
                     last_incumbent = _incumbent_snapshot(
                         seed, current, len(history), phase, local_step, beta,
@@ -1318,7 +1519,9 @@ def _run_seed(seed, ref, anchor, domain, all_rows, old_rows, new_rows,
                 "weights_after_sha256": coverage.sha256_array(np.asarray(current, dtype="<f8")),
             })
             if objective_layout_ids is not None:
-                step_record["optimization_objective_id"] = coverage.OBJECTIVE_ID_V7
+                step_record["optimization_objective_id"] = (
+                    optimization_objective_id or coverage.OBJECTIVE_ID_V7
+                )
                 step_record["optimization_layout_ids"] = optimizer_layout_ids
             history.append(step_record)
             order += 1
@@ -1339,13 +1542,20 @@ def _run_seed(seed, ref, anchor, domain, all_rows, old_rows, new_rows,
                 if objective_layout_ids is not None:
                     checkpoint_objective_args = (
                         selection_bases, selection_targets,
-                        coverage.OBJECTIVE_ID_V7, optimizer_layout_ids, all_layout_ids,
+                        optimization_objective_id or coverage.OBJECTIVE_ID_V7,
+                        optimizer_layout_ids, all_layout_ids,
                     )
-                record = _checkpoint_metrics(
+                checkpoint_args = (
                     all_rows, old_rows, new_rows, basis32, current,
                     bases_subset, targets_subset, beta, anchor, ref, physical, order,
-                    *checkpoint_objective_args,
-                )
+                ) + checkpoint_objective_args
+                if optimization_objective_kind == "smooth_pv":
+                    record = _checkpoint_metrics(
+                        *checkpoint_args, training_objective_kind="smooth_pv",
+                    )
+                else:
+                    # Preserve the legacy schema-5/6/7 call contract exactly.
+                    record = _checkpoint_metrics(*checkpoint_args)
                 record = _fit_checkpoint_qualified(
                     record, new_reference_mean, poly, domain, current
                 )
@@ -1359,10 +1569,13 @@ def _run_seed(seed, ref, anchor, domain, all_rows, old_rows, new_rows,
         final_diagnostic = run_diagnostic("final_beta_800", coverage.BETAS[-1])
         if final_diagnostic.get("status") != "complete":
             status = "timeout" if final_diagnostic.get("status") == "timeout" else "diagnostics_failure"
-            return {"seed": seed, "status": status, "initialization": init_record,
+            failed = {"seed": seed, "status": status, "initialization": init_record,
                     "per_layout_diagnostics": diagnostics, "steps_completed": len(history),
                     "history": history, "checkpoints": checkpoints,
                     "selected": None, "last_incumbent": last_incumbent}
+            if optimization_diagnostics_protocol is not None:
+                failed["optimization_objective_diagnostics"] = optimization_diagnostics
+            return failed
     qualified = [row for row in checkpoints if row.get("qualified")]
     selected = min(qualified, key=coverage.checkpoint_rank) if qualified else None
     result = {
@@ -1374,6 +1587,8 @@ def _run_seed(seed, ref, anchor, domain, all_rows, old_rows, new_rows,
     }
     if diagnostics_protocol is not None:
         result["per_layout_diagnostics"] = diagnostics
+    if optimization_diagnostics_protocol is not None:
+        result["optimization_objective_diagnostics"] = optimization_diagnostics
     return result
 
 
@@ -1564,10 +1779,11 @@ def run(args) -> Path:
     run_dir.mkdir(parents=True, exist_ok=False)
     report_path = run_dir / "coverage_report.json"
     schema_version = plan.get("schema_version")
-    schema_feasible_starts = schema_version in (6, 7)
+    schema_feasible_starts = schema_version in (6, 7, 8)
     schema7 = schema_version == 7
+    schema8 = schema_version == 8
     report = {
-        "schema_version": 3 if schema7 else (2 if schema_feasible_starts else 1),
+        "schema_version": 4 if schema8 else (3 if schema7 else (2 if schema_feasible_starts else 1)),
         "objective_id": plan.get("objective_id", coverage.OBJECTIVE_ID),
         "status": "preflight_complete", "created_utc": datetime.now(timezone.utc).isoformat(),
         "plan_sha256": plan_sha, "previous_report_sha256": coverage.PINNED_PREVIOUS_REPORT_SHA256,
@@ -1586,6 +1802,11 @@ def run(args) -> Path:
         report["fixed_fit_layout_hashes"] = plan["fixed_fit_layout_hashes"]
     if schema7:
         report["superseded_schema6_attempt"] = plan["superseded_schema6_attempt"]
+        report["optimization_objective_protocol"] = plan["optimization_objective_protocol"]
+        report["optimization_diagnostics_protocol"] = plan["optimization_diagnostics_protocol"]
+    if schema8:
+        report["superseded_schema6_attempt"] = plan["superseded_schema6_attempt"]
+        report["superseded_schema7_attempt"] = plan["superseded_schema7_attempt"]
         report["optimization_objective_protocol"] = plan["optimization_objective_protocol"]
         report["optimization_diagnostics_protocol"] = plan["optimization_diagnostics_protocol"]
     _atomic_json(report_path, report)
@@ -1758,6 +1979,13 @@ def run(args) -> Path:
                 if schema7:
                     seed_options["objective_layout_ids"] = plan[
                         "optimization_objective_protocol"]["layout_ids"]
+                if schema8:
+                    seed_options.update({
+                        "objective_layout_ids": plan["optimization_objective_protocol"]["layout_ids"],
+                        "optimization_objective_id": plan["optimization_objective_protocol"]["objective_id"],
+                        "optimization_objective_kind": "smooth_pv",
+                        "optimization_diagnostics_protocol": plan["optimization_diagnostics_protocol"],
+                    })
                 result = _run_seed(
                     seed, reference, anchor, domain, all_rows, context["rows"], new_rows,
                     basis32, basis64, basis_torch, targets_torch, plan["physical"],
@@ -1797,6 +2025,10 @@ def run(args) -> Path:
                 if schema_feasible_starts:
                     seed_failure_record["initialization"] = partial_initialization
                     seed_failure_record["per_layout_diagnostics"] = partial_diagnostics
+                if schema8:
+                    seed_failure_record["optimization_objective_diagnostics"] = (
+                        incumbent_details.get("optimization_objective_diagnostics", [])
+                    )
                 report["seeds"].append(seed_failure_record)
                 report["active_seed"] = None
                 report["active_step"] = None

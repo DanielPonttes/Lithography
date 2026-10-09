@@ -458,3 +458,111 @@ def critical_corner_softcount_value(
     if not math.isfinite(value):
         raise FloatingPointError("non-finite critical-corner softcount value")
     return value
+
+
+def smooth_pv_from_aerial(
+    aerial: torch.Tensor,
+    beta: float,
+    threshold: float = THRESHOLD,
+    low_dose: float = LOW_DOSE,
+    high_dose: float = HIGH_DOSE,
+) -> torch.Tensor:
+    """Mean smooth dose-transition indicator for one FIT layout.
+
+    This target-independent surrogate is the mean difference between the
+    high-dose and low-dose soft prints. It is not the thresholded hard PV-band
+    count. The beta value is supplied by the caller and follows the registered
+    continuation schedule.
+    """
+    beta = float(beta)
+    threshold = float(threshold)
+    low_dose = float(low_dose)
+    high_dose = float(high_dose)
+    if not math.isfinite(beta) or beta <= 0:
+        raise ValueError("smooth PV beta must be finite and positive")
+    if not math.isfinite(threshold):
+        raise ValueError("smooth PV threshold must be finite")
+    if (not math.isfinite(low_dose) or not math.isfinite(high_dose)
+            or low_dose <= 0 or high_dose <= low_dose):
+        raise ValueError("smooth PV doses must be finite, positive, and increasing")
+    if not isinstance(aerial, torch.Tensor) or aerial.ndim != 2:
+        raise ValueError("smooth PV aerial must be a height-by-width tensor")
+    if not torch.isfinite(aerial).all():
+        raise ValueError("smooth PV aerial contains non-finite values")
+    low_print = torch.sigmoid(beta * (low_dose * aerial - threshold))
+    high_print = torch.sigmoid(beta * (high_dose * aerial - threshold))
+    return (high_print - low_print).mean()
+
+
+def smooth_pv_value_gradient(
+    weights: np.ndarray,
+    bases: Mapping[str, torch.Tensor],
+    beta: float,
+    threshold: float = THRESHOLD,
+    low_dose: float = LOW_DOSE,
+    high_dose: float = HIGH_DOSE,
+) -> tuple[float, np.ndarray]:
+    """Evaluate an equal-layout smooth-PV mean and its source gradient."""
+    if not bases:
+        raise ValueError("at least one FIT basis is required")
+    weight_array = np.asarray(weights, dtype=np.float64)
+    if weight_array.ndim != 1 or not np.isfinite(weight_array).all():
+        raise ValueError("smooth PV source weights must be a finite vector")
+    device = next(iter(bases.values())).device
+    variable = torch.tensor(weight_array, dtype=torch.float64, device=device,
+                            requires_grad=True)
+    per_layout = []
+    for name, basis in bases.items():
+        if not isinstance(basis, torch.Tensor) or basis.ndim != 3:
+            raise ValueError("basis for %s must have shape (source, height, width)" % name)
+        if basis.shape[0] != variable.numel():
+            raise ValueError("basis source dimension mismatch for %s" % name)
+        if not torch.isfinite(basis).all():
+            raise ValueError("basis for %s contains non-finite values" % name)
+        aerial = torch.einsum("n,nhw->hw", variable, basis)
+        per_layout.append(smooth_pv_from_aerial(
+            aerial, beta, threshold, low_dose, high_dose,
+        ).reshape(()))
+    loss = torch.stack(per_layout).mean()
+    if not torch.isfinite(loss):
+        raise FloatingPointError("non-finite smooth PV loss")
+    loss.backward()
+    if variable.grad is None or not torch.isfinite(variable.grad).all():
+        raise FloatingPointError("missing or non-finite smooth PV source gradient")
+    return float(loss.detach().item()), variable.grad.detach().cpu().numpy().copy()
+
+
+def smooth_pv_value(
+    weights: np.ndarray,
+    bases: Mapping[str, torch.Tensor],
+    beta: float,
+    threshold: float = THRESHOLD,
+    low_dose: float = LOW_DOSE,
+    high_dose: float = HIGH_DOSE,
+) -> float:
+    """Evaluate an equal-layout smooth-PV mean without constructing gradients."""
+    if not bases:
+        raise ValueError("at least one FIT basis is required")
+    weight_array = np.asarray(weights, dtype=np.float64)
+    if weight_array.ndim != 1 or not np.isfinite(weight_array).all():
+        raise ValueError("smooth PV source weights must be a finite vector")
+    device = next(iter(bases.values())).device
+    variable = torch.as_tensor(weight_array, dtype=torch.float64, device=device)
+    values = []
+    with torch.no_grad():
+        for name, basis in bases.items():
+            if not isinstance(basis, torch.Tensor) or basis.ndim != 3:
+                raise ValueError("basis for %s must have shape (source, height, width)" % name)
+            if basis.shape[0] != variable.numel():
+                raise ValueError("basis source dimension mismatch for %s" % name)
+            if not torch.isfinite(basis).all():
+                raise ValueError("basis for %s contains non-finite values" % name)
+            aerial = torch.einsum("n,nhw->hw", variable, basis)
+            values.append(smooth_pv_from_aerial(
+                aerial, beta, threshold, low_dose, high_dose,
+            ).reshape(()))
+        loss = torch.stack(values).mean()
+    result = float(loss.item())
+    if not math.isfinite(result):
+        raise FloatingPointError("non-finite smooth PV value")
+    return result
