@@ -28,7 +28,7 @@ Pelotas, Brasil\\
 \maketitle
 
 \begin{abstract}
-This paper documents a source-only lithography pilot, separate from proposed joint source--mask optimization (SMO) and Neural-ILT work. The pilot optimizes 49 nonnegative pixelated illumination weights with unit total flux while holding seven FIT layouts fixed, using a scalar Abbe fixed-basis model and dose-weighted sigmoid resist. Three completed objective variants used five distinct feasible starts and completed their 204-step schedules, but none produced a checkpoint that passed the registered FIT gates. For schema 8, the new-layout mean was 161.333/35.667/93.333 pixels for PV-band, nominal $L_2$, and worst-dose $L_2$, compared with reference means 161.333/35.333/93.333. Calibration remained closed, and no final3 layout was indexed or evaluated. These FIT results do not demonstrate process-window improvement, hotspot detection, generalization, or official-benchmark performance.
+This paper documents a source-only lithography pilot, separate from proposed joint source--mask optimization (SMO) and Neural-ILT work. The pilot optimizes 49 nonnegative pixelated illumination weights with unit total flux while holding seven FIT layouts fixed, using a scalar Abbe fixed-basis model and dose-weighted sigmoid resist. Three completed objective variants used five distinct feasible starts and completed their 204-step schedules, but none produced a checkpoint that passed the registered FIT gates. For schema 8, the new-layout mean was 161.333/35.667/93.333 pixels for PV-band, nominal $L_2$, and worst-dose $L_2$, compared with reference means 161.333/35.333/93.333. Calibration remained closed, and no final3 layout was indexed or evaluated. A subsequent fixed-grid diagnostic evaluated 5,140 source mixtures and found a best new-layout PV-band mean of 160.667 pixels, a 0.413\% decrease with unchanged mean nominal and worst-dose errors; one layout's nominal error nevertheless increased. These FIT results do not demonstrate process-window improvement, hotspot detection, generalization, or official-benchmark performance.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -46,9 +46,12 @@ This pilot is motivated by earlier work in the broader project on Neural-ILT wit
 \noindent\textbf{Contributions.} This draft:
 \begin{itemize}
     \item specifies the implemented 49-weight, fixed-mask illumination experiment and distinguishes its differentiable training objective from the hard PV-band metric;
-    \item reports the frozen schema-6, schema-7, and schema-8 FIT outcomes, including zero qualified checkpoints and the closed calibration boundary; and
-    \item distinguishes the measured smooth-PV ablation from a proposed, unimplemented direct hard-PV diagnostic and from future joint mask/source optimization.
+    \item reports the frozen schema-6, schema-7, and schema-8 FIT outcomes, including zero qualified optimizer checkpoints, a subsequent qualifying FIT-grid point, and the closed calibration boundary; and
+    \item distinguishes the measured smooth-PV ablation from a proposed, unimplemented mixed-integer hard-PV diagnostic and from future joint mask/source optimization.
 \end{itemize}
+
+
+Robust pixelated source--mask optimization has previously been studied using a three-dimensional partially coherent imaging model \cite{robustsmo}. More recent bilevel work optimizes the coupled source and mask variables using an accelerated Abbe model \cite{bismo}. Those formulations provide context for the proposed extension; the present experiment holds masks and focus fixed and cannot inherit their reported quality gains.
 
 \section{Background and Metrics}
 \subsection{Forward Lithography and the Implemented Model}
@@ -109,7 +112,7 @@ The schema-6 report status is \texttt{no\_fit\_qualified\_checkpoint}; every see
 Table~\ref{tab:reference} reports the original-FIT reference and compares the new-three reference with the last FIT checkpoints from schemas 6, 7, and 8. Schema 6 ties PV-band and worst-dose means but has one additional aggregate nominal mismatch. Schema 7 improves nominal $L_2$ by one mismatch while worsening PV-band and worst-dose means. Schema 8 ties PV-band and worst-dose means and has one additional aggregate nominal mismatch.
 
 \begin{table*}[t]
-\caption{Reference and last FIT-checkpoint metrics. Values are mean pixel counts over layouts in each group.}
+\caption{Reference, last optimizer-checkpoint, and segment-diagnostic metrics. Values are mean pixel counts over layouts in each group.}
 \label{tab:reference}
 \centering
 \begin{tabular}{lrrr}
@@ -121,6 +124,7 @@ New three FIT reference & 161.333 & 35.333 & 93.333 \\
 Schema-6, new three FIT & 161.333 & 35.667 & 93.333 \\
 Schema-7, new three FIT & 162.000 & 35.000 & 94.333 \\
 Schema-8, new three FIT & 161.333 & 35.667 & 93.333 \\
+Segment diagnostic, new three FIT & 160.667 & 35.333 & 93.333 \\
 \hline
 \end{tabular}
 \end{table*}
@@ -131,6 +135,11 @@ Schema 8 had the same new-three hard-metric means as schema 6: PV-band 161.333, 
 
 For schema 6 only, the final-$\beta=800$ diagnostics show a same-beta surrogate tradeoff: from the phase boundary to the last FIT checkpoint, the original-four mean soft loss decreased by $7.372981\times10^{-6}$, while the new-three mean increased by $1.343352\times10^{-6}$. This is a measured change in that run's differentiable objective; it does not establish general incompatibility or explain hard metrics in schema 7. The reference-to-final hard-metric comparisons above use a different baseline and do not attribute changes to any single accepted step.
 
+
+The completed source-segment diagnostic found 342 qualifying ordered slots, corresponding to 312 distinct float64 vectors and 282 distinct float32 vectors. The common FIT rank selected slot 4755 in seed group 101, on the reference-to-schema-7 endpoint segment at $\alpha=129/256$. Its original-four means remained 234.5/0/150.25 pixels, and its new-three means were 160.667/35.333/93.333. Thus aggregate new-three PV-band decreased from 484 to 482 pixels (0.413\%). This was a FIT-only diagnostic, not a new optimizer training run or independent test.
+
+At the selected point, finite ribbons changed from 205 to 203 PV-band pixels and from 41 to 40 nominal mismatches; asymmetric line ends remained at 130 PV-band pixels but increased from 16 to 17 nominal mismatches. Irregular contacts remained at 149 PV-band pixels and 49 nominal mismatches. Worst-dose counts remained 118, 73, and 89, respectively. The mean-fidelity gate therefore passed despite a per-layout tradeoff. The seed-43 feasible initialization itself also qualified, with new-three PV-band 161 and unchanged mean fidelity; the earlier optimizer did not include its initial state as a selectable hard-metric checkpoint. These observations motivate preserving a hard-qualified incumbent from initialization onward. Reused terminal paths and shared FIT data prevent treating the five groups or hundreds of slots as independent replication.
+
 \section{Limitations and Planned Validation}
 \label{sec:limits}
 This is a source-only computational pilot on seven fixed FIT layouts. Focus was held at zero while dose varied by $\pm2\%$; consequently, the run does not demonstrate a focus--dose process window. It does not evaluate mask changes, a Neural-ILT model, hotspot labels, hotspot-classification metrics, or an official LithoBench or MaskOpt test set. The differentiable softcount must not be described as a measured hard PV-band or hotspot-detection result.
@@ -139,8 +148,17 @@ No final3 result is claimed; those layouts were never indexed or evaluated.
 
 The schema-6 feasible-start protocol and schema-7 static new-three critical-softcount ablation are implemented and benchmarked, but neither yielded a qualified checkpoint. Schema 8 is also implemented and benchmarked; its direct smooth-PV training objective did not yield a qualified checkpoint or improve the required hard FIT metrics. A direct hard-PV mixed-integer diagnostic is only a proposed read-only design; it has not been implemented or run. Any candidate would need a full float32 hard-gate audit; a global infeasibility claim would additionally require a certified bound that covers float32 threshold classification. The observed schema-8 failure does not prove that a qualifying source is infeasible. Future work will separately test joint source--mask optimization with a Neural-ILT model, define any hotspot target and evaluation metric, and conduct external evaluation on official LithoBench and MaskOpt data \cite{lithobench,maskopt}. Such evaluation requires a frozen protocol and independent test data; no generalization claim is made here.
 
+
+\subsection{Registered Source-Segment Diagnostic}
+A prospectively registered FIT-only diagnostic was implemented to examine intermediate source weights that the smooth optimizer checkpoints may have missed. For each of the five seeds, it registers four segments from the frozen reference to the schema-8 feasible start and the schema-6, schema-7, and schema-8 terminal vectors. Each segment uses $\alpha=k/256$, $k=0,\ldots,256$, giving 5,140 ordered slots. Each candidate is the unprojected float64 convex mixture $(1-\alpha)\mathbf{s}_{\mathrm{ref}}+\alpha\mathbf{s}_{\mathrm{end}}$ and receives its own feasibility and hard-metric audits. Duplicate slot provenance is retained.
+
+Screening uses the existing float32 raster evaluator with one CPU thread after exact hard-metric parity of the reference at the original host thread count. Every screen-qualified point is fully re-evaluated without cache at the original thread count before ranking. A negative screening result would concern this finite screening grid; it would not certify continuous-segment or global infeasibility. Calibration remains closed by design even if a FIT point passes, and final3 remains untouched. All 5,140 slots completed in 514.449706 seconds, and all five groups contained qualifying points. The selected result was fully re-evaluated at the original 24-thread configuration. The report and source-vector identities are recorded in the accompanying result documentation; calibration remained closed and final3 remained untouched.
+
+\subsection{Evidence Required for a Quality Claim}
+A qualifying FIT point would establish only that the current source parameterization can meet the development gates. A quality claim additionally requires a frozen comparison on layouts not used to choose the source or revise the method, using matched masks, optical settings, dose conditions, and evaluation budgets. Both mean and per-layout PV-band, nominal fidelity, and worst-dose fidelity must be reported; five solver restarts on the same layouts do not provide independent data replication. Any hotspot-identification claim also requires an explicit hotspot definition, reference labels, and detection metrics. These evaluations have not been performed here.
+
 \section{Conclusion}
-We documented three completed fixed-mask, 49-weight illumination experiments. Schemas 6, 7, and 8 used distinct feasible starts and completed their schedules, but none produced a qualified checkpoint; calibration remained closed and final3 layouts were never indexed or evaluated. Schema 8 tied the reference new-three PV-band and worst-dose means and had one additional nominal mismatch. The evidence supports reporting the measured FIT outcomes and their limitations, not a claim of improved printability, hotspot detection, or generalization. A direct hard-PV diagnostic and a joint SMO--Neural-ILT pipeline remain unimplemented future work.
+We documented three completed fixed-mask, 49-weight optimizer experiments and a completed finite source-mixture diagnostic. The optimizer variants yielded no qualifying checkpoint, while the diagnostic found a two-pixel aggregate PV-band improvement on the three new FIT layouts with mean fidelity preserved. One layout's nominal error increased, and the best reduction was only 0.413\%. This establishes a qualifying point in the evaluated FIT grid and a need to track hard-metric incumbents; it does not establish a substantial quality gain, hotspot-detection improvement, generalization, or process-window robustness. Calibration remained closed and final3 untouched. A mixed-integer hard-PV diagnostic and joint SMO--Neural-ILT work remain unimplemented.
 
 \begin{thebibliography}{00}
 \bibitem{hopkins}
@@ -154,6 +172,13 @@ B. Jiang, L. Liu, Y. Ma, B. Yu, and E. F. Y. Young, "Neural-ILT 2.0: Migrating I
 
 \bibitem{maskopt}
 Y. Hu, L. Zhuang, H. Xiang, J. Xiong, and G.-J. Nam, "MaskOpt: A large-scale mask optimization dataset to advance AI in integrated circuit manufacturing," arXiv:2512.20655, 2025. [Online]. Available: \url{https://arxiv.org/abs/2512.20655}
+
+\bibitem{robustsmo}
+S. Li, X. Wang, and Y. Bu, "Robust pixel-based source and mask optimization for inverse lithography," \textit{Optics \& Laser Technology}, vol. 45, pp. 285--293, Feb. 2013, doi: 10.1016/j.optlastec.2012.06.033.
+
+\bibitem{bismo}
+G. Chen, H. He, P. Xu, H. Geng, and B. Yu, "Efficient Bilevel Source Mask Optimization," arXiv:2405.09548, 2024. [Online]. Available: \url{https://arxiv.org/abs/2405.09548}
+
 \end{thebibliography}
 
 \end{document}

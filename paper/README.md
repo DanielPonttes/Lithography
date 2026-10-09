@@ -24,9 +24,29 @@ The October 7 schema-5 attempt is historical: all five jittered starts failed fe
 
 ## Validation and review status
 
+The subsequent completed FIT-only segment diagnostic is documented in
+[SOURCE_SEGMENT_RESULTS.md](../docs/SOURCE_SEGMENT_RESULTS.md). It evaluated
+all 5,140 slots in 514.449706 seconds and found 342 passing slots (282 distinct
+float32 sources). The best new-three PV-band mean decreased from 161.333333
+to 160.666667 pixels, with mean nominal/worst-dose errors unchanged. Finite
+ribbons improved nominal error by one while line ends worsened by one; this
+is a mean-fidelity result, not non-regression on every layout. Calibration
+stayed closed by design and final3 was never indexed or evaluated. The
+diagnostic report SHA-256 is
+`a66908b8a8b902bdcc1846a35c55ec4828080b9fba2499cbb6ebacdbff08d3b4`.
+Its consumed plan SHA-256 is
+`5c38f94ff79b7f4e2738664b211d4b0c1c0692f95ecb1ab56548736e50b1170d`.
+
+The diagnostic implementation passed 201 unique tests locally in 88.930
+seconds and on the server in 13.533 seconds. Muse completed read-only code
+and manuscript reviews. Grok's diagnostic code review reached its 10-minute
+timeout without a final review, with partial output preserved. Opus remains
+pending under the exact-model quota restriction below. Review status does
+not turn this small development-set gain into a quality or generalization claim.
+
 - After schema-8 implementation and the two-test follow-up, `python -B -m unittest discover -s tests -p test_source_coverage.py` passed 51 tests and `python -B -m unittest discover -s tests -p test_source_robustness.py` passed 20 tests; the full local suite passed 174 tests with zero skips in 75.535 seconds. That run included the real smooth-PV gradient/Armijo descent at all three beta values and synthetic schema-7 FIT-lineage validation. The root's subsequent final independent unique harness passed 181/181 tests with zero skips in 76.519 seconds; the server harness passed 181/181 in 13.346 seconds.
 - The consumed schema-8 plan hash and closed schema-7 FIT-lineage validator passed. The schema-7 and schema-8 attempts are immutable; the schema-8 report records no qualifying checkpoint and is validated without using calibration metrics.
-- Grok 4.7 and Muse completed read-only reviews of the schema-8 implementation and focused test follow-up, with no code blockers. The latest documentation corrections are pending a fresh focused read-only review. The required Claude Opus 5.5 High review remains pending because the exact model is unavailable under the account usage limit until November 3, 2026. No substitute review is represented as completed.
+- Grok 4.7 and Muse completed read-only reviews of the schema-8 implementation, focused test follow-up and documentation corrections, with no code blockers. These completed schema-8 reviews do not imply completion of the later diagnostic review. The required Claude Opus 5.5 High review remains pending because the exact model is unavailable under the account usage limit until November 3, 2026. No substitute review is represented as completed.
 - The built-in LaTeX compile attempt failed with a Windows helper/setup error. This does not establish a TeX source error; no PDF has been validated.
 
 ## Unresolved author and publication details

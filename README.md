@@ -269,3 +269,9 @@ redistribui.
 ## Documentação técnica
 
 Veja [docs/LIGHT_SOURCE_OPTIMIZATION.md](docs/LIGHT_SOURCE_OPTIMIZATION.md) para o modelo de fonte global, os contratos dos módulos e o protocolo de otimização restrita.
+
+O [diagnóstico de segmentos de fonte](docs/SOURCE_SEGMENT_SWEEP.md) teve seus
+[resultados auditados](docs/SOURCE_SEGMENT_RESULTS.md): 5.140 combinações completas,
+com melhor redução de 0,413% na PV-band dos três layouts de ajuste e fidelidade
+média preservada. Esse resultado pequeno no conjunto de desenvolvimento ainda
+não demonstra melhora na identificação de hotspots nem generalização.
