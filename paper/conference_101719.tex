@@ -2,6 +2,9 @@
 \usepackage{cite}
 \usepackage{amsmath,amssymb}
 \usepackage{url}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
 
 \begin{document}
 \title{Event-Driven Search of Pixelated Illumination Sources Under Fixed-Mask Lithography Constraints}
@@ -168,6 +171,42 @@ Event arms improved the existing checkpoint rank in 15/15 pairs, while grid arms
 
 The cache-enabled v2 comparison used a fresh prospective plan and attempt marker, but the same five seeds, paths, protected sources, candidate counts, ranking, and hard gates. Its median arm times were 6.221 seconds for events and 58.751 seconds for the grid; the median paired grid-to-event ratio was 9.598 (range 7.303--18.334). The cache returned 888/1,200 event hard-count lookups (74.000%) and 9,318/15,465 grid lookups (60.252%). Across all 30 corresponding method/seed/repeat arms, the best-qualified candidate IDs, full rank tuples, qualified hard-metric records, and improvement identities matched the uncached v1 outputs exactly. Both protocols had 15/15 event rank improvements, 0/15 grid rank improvements, and no hard-PV improvement beyond the preserved best-known source.
 
+\begin{figure*}[t]
+\centering
+% Ratios are calculated from each matched seed/repeat arm in the frozen benchmark JSON.
+\begin{tikzpicture}
+\begin{axis}[
+  width=\textwidth,height=5.4cm,
+  xmin=-0.6,xmax=14.6,ymin=0,ymax=20,
+  xtick={0,1,2,3,4,5,6,7,8,9,10,11,12,13,14},
+  xticklabels={17/1,29/1,43/1,71/1,101/1,17/2,29/2,43/2,71/2,101/2,17/3,29/3,43/3,71/3,101/3},
+  xticklabel style={rotate=45,anchor=east,font=\scriptsize},
+  ytick={0,5,10,15,20},
+  xlabel={Matched fixed seed / timing repeat},
+  ylabel={Uniform-grid / event full-arm time ratio},
+  grid=major,grid style={gray!18},
+  tick label style={font=\footnotesize},label style={font=\footnotesize},
+  axis line style={gray!70},
+  legend style={draw=none,at={(0.01,0.99)},anchor=north west,font=\footnotesize},
+]
+\addplot[only marks,mark=*,mark size=2.0pt,color=blue!70!black] coordinates {
+ (0,9.080504) (1,9.951309) (2,17.385131) (3,10.014108) (4,7.137939)
+ (5,9.482022) (6,10.743937) (7,18.875954) (8,8.403605) (9,6.666442)
+ (10,9.581576) (11,9.601137) (12,18.260976) (13,8.687694) (14,8.466410)};
+\addlegendentry{Uncached v1}
+\addplot[only marks,mark=square*,mark size=2.0pt,color=orange!85!black] coordinates {
+ (0,8.864846) (1,9.758135) (2,16.631033) (3,9.598170) (4,7.841296)
+ (5,9.265799) (6,10.078484) (7,17.131257) (8,10.307383) (9,7.302911)
+ (10,9.521215) (11,10.243140) (12,18.333675) (13,9.586726) (14,7.425954)};
+\addlegendentry{Cache-enabled v2}
+\addplot[blue!70!black,dashed,thick,forget plot] coordinates {(-0.6,9.5816) (14.6,9.5816)};
+\addplot[orange!85!black,dashed,thick,forget plot] coordinates {(-0.6,9.5982) (14.6,9.5982)};
+\end{axis}
+\end{tikzpicture}
+\caption{Matched full-arm elapsed-time ratios for event proposals versus the uniform $k/256$ grid. Each point is one fixed-seed/timing-repeat pair; dashed medians are 9.582 (uncached v1) and 9.598 (cache-enabled v2). Both arms used the same protected incumbents, masks, and per-arm caps. This is a descriptive CPU search-workload ratio, not a hardware speedup or a causal cache comparison; a shared GPU workload and test overlap affected the server timing context.}
+\label{fig:paired-runtimes}
+\end{figure*}
+
 An unrelated GPU job shared the server during both protocol windows. Cache-enabled runner tests overlapped the final uncached timing pair for about 20 seconds. These were tests, not another benchmark arm. Together with the shared host and sequential protocol windows, this prevents treating differences between cached and uncached medians as a causal estimate of cache benefit. The two protocols support reproducibility of the candidate/rank/metric outcome, not an isolated cache-speed claim.
 
 The directly confirmed event-native candidate was \texttt{seed-29:schema7\_endpoint:000014}. For its 49-weight vector, the direct simulator and weighted-basis aerials agreed within the recorded numerical tolerance, and the direct-GPU, weighted-basis-GPU, and canonical-CPU routes returned exactly matching per-layout hard counts for both candidate and reference across all seven FIT layouts. All registered aggregate hard gates passed. On the three new FIT layouts, the candidate changed PV-band counts from 205/130/149 to 203/130/149, nominal mismatches from 41/16/49 to 40/17/49, and worst-dose mismatches remained 118/73/89. The new-layout PV-band sum fell from 484 to 482 (0.413\%); nominal and worst-dose means were unchanged. The one-pixel nominal increase on asymmetric line ends is offset by a one-pixel decrease on finite ribbons, so the unchanged aggregate mean masks a per-layout tradeoff. The original-four FIT means remained at 234.5/0/150.25 pixels for PV-band, nominal $L_2$, and worst-dose $L_2$, respectively. No claim of per-layout non-regression is made.
@@ -191,7 +230,7 @@ At the selected point, finite ribbons changed from 205 to 203 PV-band pixels and
 \label{sec:independent-transfer}
 A post-selection transfer check scored three frozen 49-weight vectors (event candidate, reference, and best-known) on the supplied StdMetal and StdContact GLP tiles. The 271 metal and 165 contact inputs collapsed by exact raster identity to 220 and 165 unique layouts, respectively. Summaries use 39 metal, 19 contact, and 41 pooled cell-group components; pooled components can link families, and the bootstrap groups are not independent samples. All 385 unique layouts were scored for all three vectors (1,155 records). The adapted model rasterizes at 1024$\times$1024 and 4\,nm/pixel, and uses scalar Abbe imaging with NA 1.35, wavelength 193\,nm, 49 source points on a 9$\times$9 grid within sigma 0.9, zero focus, doses 0.98/1.00/1.02, threshold 0.225, and steepness 50. The sigma-inner value 0.3 defines an initialization prior only. The canonical output is a one-thread CPU contraction of a GPU-prepared basis; direct-GPU and weighted-GPU routes are parity checks. This is not official SOCS, EPE, hotspot, or full-mask scoring.
 
-Table~\ref{tab:transfer} gives equal-group means of per-layout fractions over target-positive pixels. The pooled candidate PV-band rate decreased by 0.0525\% relative to reference (97,712 to 97,689 raw pixels), but its paired group delta was $-1.7017\times10^{-5}$ with a 95\% percentile interval of [$-4.8912\times10^{-5}$, $+1.4937\times10^{-5}$] (20 wins, 2 ties, 19 losses). The interval crosses zero. StdContact's PV-band delta was favorable, while StdMetal's interval crossed zero and its nominal mismatch fraction worsened by $1.6980\times10^{-5}$ (95\% interval [$2.1671\times10^{-6}$, $3.3006\times10^{-5}$]). The candidate was nearly tied with best-known on pooled PV-band and was slightly worse by $1.5495\times10^{-6}$ in equal-group mean rate. These small relative PV-band shifts sit alongside severe absolute StdContact spatial error: candidate equal-group nominal and worst-dose mismatch fractions were 0.86566 and 0.89873 (86.6\% and 89.9\% of target-positive pixels).
+The baselines in this section are internal to this study: fixed-source quality is compared with the frozen reference and best-known illumination vectors, while search time is compared with the paired uniform $k/256$ grid. Neither is a comparison with the original published NeuralILT baseline or an end-to-end Tensor-of-Light pipeline, and the transfer model is not official SOCS scoring. The supplied original-paper copy reports its Neural-ILT Init-versus-PV-band-fine-tuned comparison on the stated ten-case MetalSet split, using LithoBench Quasar with $\alpha=85$, dose $\pm2\%$, and focus $\pm25$\,nm. That mask-training comparison and process window differ from this fixed-source scalar-Abbe transfer check ($\alpha=50$, zero focus, normalized XOR), so its reported metrics are not direct head-to-head baselines here. Table~\ref{tab:transfer} gives equal-group means of per-layout fractions over target-positive pixels. The pooled candidate PV-band rate decreased by 0.0525\% relative to reference (97,712 to 97,689 raw pixels), but its paired group delta was $-1.7017\times10^{-5}$ with a 95\% percentile interval of [$-4.8912\times10^{-5}$, $+1.4937\times10^{-5}$] (20 wins, 2 ties, 19 losses). The interval crosses zero. StdContact's PV-band delta was favorable, while StdMetal's interval crossed zero and its nominal mismatch fraction worsened by $1.6980\times10^{-5}$ (95\% interval [$2.1671\times10^{-6}$, $3.3006\times10^{-5}$]). The candidate was nearly tied with best-known on pooled PV-band and was slightly worse by $1.5495\times10^{-6}$ in equal-group mean rate. These small relative PV-band shifts sit alongside severe absolute StdContact spatial error: candidate equal-group nominal and worst-dose mismatch fractions were 0.86566 and 0.89873 (86.6\% and 89.9\% of target-positive pixels).
 
 \begin{table*}[t]
 \caption{Equal-cell-group means of per-layout normalized metrics for the fixed-source transfer check. Values are reference $\rightarrow$ event candidate; lower is better.}
@@ -208,6 +247,67 @@ StdContact & 19 (165) & 0.06690953 $\rightarrow$ 0.06685180 & 0.86575970 $\right
 \hline
 \end{tabular}
 \end{table*}
+
+\begin{figure*}[t]
+\centering
+% Inline PGFPlots coordinates are transcribed from the frozen JSON by scripts/plot_source_results.py.
+\begin{tikzpicture}
+\begin{axis}[
+  width=\textwidth,height=7.4cm,
+  xmin=-0.016,xmax=0.006,ymin=-0.48,ymax=8.48,
+  y dir=reverse,
+  xtick={-0.015,-0.010,-0.005,0,0.005},
+  ytick={0,1,2,3,4,5,6,7,8},
+  yticklabels={Pooled--PV-band,Pooled--Nominal,Pooled--Worst dose,StdMetal--PV-band,StdMetal--Nominal,StdMetal--Worst dose,StdContact--PV-band,StdContact--Nominal,StdContact--Worst dose},
+  xlabel={Candidate minus frozen comparator (percentage points; lower is better)},
+  xmajorgrids=true,
+  grid style={gray!18},
+  tick label style={font=\footnotesize},
+  label style={font=\footnotesize},
+  axis line style={gray!70},
+]
+\draw[dashed,gray!80,thick] (axis cs:0,-0.48) -- (axis cs:0,8.48);
+\draw[blue!70!black,thick] (axis cs:-0.00489121,-0.14000000) -- (axis cs:0.00149373,-0.14000000) (axis cs:-0.00489121,-0.19500000) -- (axis cs:-0.00489121,-0.08500000) (axis cs:0.00149373,-0.19500000) -- (axis cs:0.00149373,-0.08500000);
+\fill[blue!70!black] (axis cs:-0.00170167,-0.14000000) circle[radius=1.45pt];
+\draw[blue!70!black,thick] (axis cs:-0.00317326,0.86000000) -- (axis cs:0.00057889,0.86000000) (axis cs:-0.00317326,0.80500000) -- (axis cs:-0.00317326,0.91500000) (axis cs:0.00057889,0.80500000) -- (axis cs:0.00057889,0.91500000);
+\fill[blue!70!black] (axis cs:-0.00127272,0.86000000) circle[radius=1.45pt];
+\draw[blue!70!black,thick] (axis cs:-0.00341806,1.86000000) -- (axis cs:0.00028918,1.86000000) (axis cs:-0.00341806,1.80500000) -- (axis cs:-0.00341806,1.91500000) (axis cs:0.00028918,1.80500000) -- (axis cs:0.00028918,1.91500000);
+\fill[blue!70!black] (axis cs:-0.00147141,1.86000000) circle[radius=1.45pt];
+\draw[blue!70!black,thick] (axis cs:-0.00394836,2.86000000) -- (axis cs:0.00285858,2.86000000) (axis cs:-0.00394836,2.80500000) -- (axis cs:-0.00394836,2.91500000) (axis cs:0.00285858,2.80500000) -- (axis cs:0.00285858,2.91500000);
+\fill[blue!70!black] (axis cs:-0.00048685,2.86000000) circle[radius=1.45pt];
+\draw[blue!70!black,thick] (axis cs:0.00021671,3.86000000) -- (axis cs:0.00330058,3.86000000) (axis cs:0.00021671,3.80500000) -- (axis cs:0.00021671,3.91500000) (axis cs:0.00330058,3.80500000) -- (axis cs:0.00330058,3.91500000);
+\fill[blue!70!black] (axis cs:0.00169798,3.86000000) circle[radius=1.45pt];
+\draw[blue!70!black,thick] (axis cs:-0.00117895,4.86000000) -- (axis cs:0.00233922,4.86000000) (axis cs:-0.00117895,4.80500000) -- (axis cs:-0.00117895,4.91500000) (axis cs:0.00233922,4.80500000) -- (axis cs:0.00233922,4.91500000);
+\fill[blue!70!black] (axis cs:0.00069422,4.86000000) circle[radius=1.45pt];
+\draw[blue!70!black,thick] (axis cs:-0.00976603,5.86000000) -- (axis cs:-0.00194012,5.86000000) (axis cs:-0.00976603,5.80500000) -- (axis cs:-0.00976603,5.91500000) (axis cs:-0.00194012,5.80500000) -- (axis cs:-0.00194012,5.91500000);
+\fill[blue!70!black] (axis cs:-0.00577310,5.86000000) circle[radius=1.45pt];
+\draw[blue!70!black,thick] (axis cs:-0.01448433,6.86000000) -- (axis cs:-0.00624260,6.86000000) (axis cs:-0.01448433,6.80500000) -- (axis cs:-0.01448433,6.91500000) (axis cs:-0.00624260,6.80500000) -- (axis cs:-0.00624260,6.91500000);
+\fill[blue!70!black] (axis cs:-0.01020845,6.86000000) circle[radius=1.45pt];
+\draw[blue!70!black,thick] (axis cs:-0.01227618,7.86000000) -- (axis cs:-0.00530334,7.86000000) (axis cs:-0.01227618,7.80500000) -- (axis cs:-0.01227618,7.91500000) (axis cs:-0.00530334,7.80500000) -- (axis cs:-0.00530334,7.91500000);
+\fill[blue!70!black] (axis cs:-0.00875245,7.86000000) circle[radius=1.45pt];
+\draw[orange!85!black,thick] (axis cs:-0.00027208,0.14000000) -- (axis cs:0.00083135,0.14000000) (axis cs:-0.00027208,0.08500000) -- (axis cs:-0.00027208,0.19500000) (axis cs:0.00083135,0.08500000) -- (axis cs:0.00083135,0.19500000);
+\fill[orange!85!black] (axis cs:0.00015495,0.14000000) ++(-1.4pt,-1.4pt) rectangle ++(2.8pt,2.8pt);
+\draw[orange!85!black,thick] (axis cs:0.00000000,1.14000000) -- (axis cs:0.00000000,1.14000000) (axis cs:0.00000000,1.08500000) -- (axis cs:0.00000000,1.19500000) (axis cs:0.00000000,1.08500000) -- (axis cs:0.00000000,1.19500000);
+\fill[orange!85!black] (axis cs:0.00000000,1.14000000) ++(-1.4pt,-1.4pt) rectangle ++(2.8pt,2.8pt);
+\draw[orange!85!black,thick] (axis cs:-0.00028496,2.14000000) -- (axis cs:0.00083135,2.14000000) (axis cs:-0.00028496,2.08500000) -- (axis cs:-0.00028496,2.19500000) (axis cs:0.00083135,2.08500000) -- (axis cs:0.00083135,2.19500000);
+\fill[orange!85!black] (axis cs:0.00015495,2.14000000) ++(-1.4pt,-1.4pt) rectangle ++(2.8pt,2.8pt);
+\draw[orange!85!black,thick] (axis cs:-0.00028604,3.14000000) -- (axis cs:0.00091684,3.14000000) (axis cs:-0.00028604,3.08500000) -- (axis cs:-0.00028604,3.19500000) (axis cs:0.00091684,3.08500000) -- (axis cs:0.00091684,3.19500000);
+\fill[orange!85!black] (axis cs:0.00018170,3.14000000) ++(-1.4pt,-1.4pt) rectangle ++(2.8pt,2.8pt);
+\draw[orange!85!black,thick] (axis cs:0.00000000,4.14000000) -- (axis cs:0.00000000,4.14000000) (axis cs:0.00000000,4.08500000) -- (axis cs:0.00000000,4.19500000) (axis cs:0.00000000,4.08500000) -- (axis cs:0.00000000,4.19500000);
+\fill[orange!85!black] (axis cs:0.00000000,4.14000000) ++(-1.4pt,-1.4pt) rectangle ++(2.8pt,2.8pt);
+\draw[orange!85!black,thick] (axis cs:-0.00028604,5.14000000) -- (axis cs:0.00091684,5.14000000) (axis cs:-0.00028604,5.08500000) -- (axis cs:-0.00028604,5.19500000) (axis cs:0.00091684,5.08500000) -- (axis cs:0.00091684,5.19500000);
+\fill[orange!85!black] (axis cs:0.00018170,5.14000000) ++(-1.4pt,-1.4pt) rectangle ++(2.8pt,2.8pt);
+\draw[orange!85!black,thick] (axis cs:-0.00017666,6.14000000) -- (axis cs:0.00000000,6.14000000) (axis cs:-0.00017666,6.08500000) -- (axis cs:-0.00017666,6.19500000) (axis cs:0.00000000,6.08500000) -- (axis cs:0.00000000,6.19500000);
+\fill[orange!85!black] (axis cs:-0.00005889,6.14000000) ++(-1.4pt,-1.4pt) rectangle ++(2.8pt,2.8pt);
+\draw[orange!85!black,thick] (axis cs:0.00000000,7.14000000) -- (axis cs:0.00000000,7.14000000) (axis cs:0.00000000,7.08500000) -- (axis cs:0.00000000,7.19500000) (axis cs:0.00000000,7.08500000) -- (axis cs:0.00000000,7.19500000);
+\fill[orange!85!black] (axis cs:0.00000000,7.14000000) ++(-1.4pt,-1.4pt) rectangle ++(2.8pt,2.8pt);
+\draw[orange!85!black,thick] (axis cs:-0.00017666,8.14000000) -- (axis cs:0.00000000,8.14000000) (axis cs:-0.00017666,8.08500000) -- (axis cs:-0.00017666,8.19500000) (axis cs:0.00000000,8.08500000) -- (axis cs:0.00000000,8.19500000);
+\fill[orange!85!black] (axis cs:-0.00005889,8.14000000) ++(-1.4pt,-1.4pt) rectangle ++(2.8pt,2.8pt);
+\end{axis}
+\end{tikzpicture}
+\caption{Event-candidate error-rate deltas on 385 fixed-source transfer layouts. Blue circles compare the candidate with the frozen reference; orange squares compare it with the frozen best-known vector. Horizontal bars are 95\% descriptive equal-group percentile-bootstrap intervals (10,000 draws). Negative deltas mean lower error; values are in percentage points. Pooled groups can link families and are not independent samples. The source-vector comparators are internal frozen baselines, not the original published NeuralILT baseline.}
+\label{fig:transfer-deltas}
+\end{figure*}
 
 Exact hard-mask parity failed in four source/layout rows, each by one pixel at one dose: event candidate on StdContact \texttt{AOI21\_X4\_\_1\_0.glp} (dose 1.00) and StdMetal \texttt{TLAT\_X1\_\_2\_0.glp} (1.02), reference on StdMetal \texttt{CLKGATE\_X4\_\_1\_0.glp} (0.98), and best-known on StdMetal \texttt{OAI21\_X2\_\_0\_0.glp} (1.02). Their aerial comparisons remained within the allclose tolerance, with maximum absolute differences below $3.58\times10^{-7}$; masks were retained and the validation gate failed. A 512$\times$512 padding sensitivity check used one representative tile per family and all three sources; the PV-band fraction shifted in both families, and the StdContact reference had one additional one-pixel parity failure. The check was diagnostic, not a replacement for the 1024$\times$1024 result. The registered claim gate was false because the pooled PV-band interval did not lie below zero and full parity validation failed. No quality-superiority or runtime claim follows from this transfer check. Full artifact hashes, raw pixel counts, parity details, and chronology are in the accompanying result record.
 

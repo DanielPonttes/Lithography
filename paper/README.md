@@ -1,12 +1,12 @@
 # Manuscript draft status
 
-`conference_101719.tex` is a working draft about a fixed-mask, 49-weight source-illumination pilot. It distinguishes measured source-only experiments from proposed future joint SMO--Neural-ILT and hotspot-classification work. The built-in LaTeX compiler successfully compiled source SHA-256 `fd2488d6e366d4dc95d9a28eae788ac9c92664a11a4b0bbf6ff3e45f048fbe1e` on 2026-10-10. No visual PDF inspection or PDF export was performed.
+`conference_101719.tex` is a working draft about a fixed-mask, 49-weight source-illumination pilot. It distinguishes measured source-only experiments from proposed future joint SMO--Neural-ILT and hotspot-classification work. The built-in LaTeX compiler successfully compiled source SHA-256 `3c3e962afc83156d1b4c611c071ab1c80de48aef0756ce301a251eabc871eec2` on 2026-10-10. Root visually inspected the three PNG charts on 2026-10-10; no manuscript PDF visual inspection or manuscript PDF export was performed; the three standalone chart PDFs were generated.
 
 ## Completed event-search comparison
 
 The manuscript now centers on the bounded event-versus-grid search described in [SOURCE_EVENT_RESULTS.md](../docs/SOURCE_EVENT_RESULTS.md). Two separately pinned protocols completed 15 pairs each: the median paired grid/event search-wall ratios were 9.582 without cache and 9.598 with isolated physical-float32 caching. Both preserved the same hard quality, with no additional PV-band improvement over the protected incumbent. The four captured JSON evidence files are linked from the results note.
 
-The cache-enabled server suite passed 233 tests. Muse completed supplemental implementation, numerical manuscript, and editorial closure reviews. Required exact Claude Opus 5.5 High review remains quota-blocked until November 3, 2026; no substitute review is represented as completed. The built-in LaTeX compiler succeeded on 2026-10-10 for source SHA-256 `fd2488d6e366d4dc95d9a28eae788ac9c92664a11a4b0bbf6ff3e45f048fbe1e`; this records compilation only, not visual PDF inspection or export. These runtime repeats use the same seven FIT layouts and are not independent generalization evidence.
+The cache-enabled server suite passed 233 tests. Muse completed supplemental implementation, numerical manuscript, and editorial closure reviews. Required exact Claude Opus 5.5 High review remains quota-blocked until November 3, 2026; no substitute review is represented as completed. The built-in LaTeX compiler succeeded on 2026-10-10 for source SHA-256 `3c3e962afc83156d1b4c611c071ab1c80de48aef0756ce301a251eabc871eec2`; the root visually inspected the three PNG charts; no manuscript PDF visual inspection or manuscript PDF export was performed; the three standalone chart PDFs were generated. These runtime repeats use the same seven FIT layouts and are not independent generalization evidence.
 
 ## Frozen FIT evidence
 
@@ -59,10 +59,15 @@ one hard-mask pixel. This adapted scalar-Abbe evaluation is a limited transfer
 check, not official SOCS or MaskOpt scoring, and supports no source-quality
 superiority claim. See [the complete results and evidence links](../docs/INDEPENDENT_SOURCE_RESULTS_20261010.md).
 
+
+## Frozen-result figures
+
+`../scripts/plot_source_results.py` generates the quality-delta forest, absolute family-error chart, and matched runtime-ratio plot from the captured JSON only. PNG and PDF exports live in `figures/`. The quality baselines are the internal frozen reference and best-known source vectors; timing uses the uniform segment grid. They are not comparisons with the original published NeuralILT baseline or an end-to-end Tensor-of-Light pipeline. The fixed-source transfer remains an adapted scalar-Abbe check, not official SOCS scoring.
+
 - After schema-8 implementation and the two-test follow-up, `python -B -m unittest discover -s tests -p test_source_coverage.py` passed 51 tests and `python -B -m unittest discover -s tests -p test_source_robustness.py` passed 20 tests; the full local suite passed 174 tests with zero skips in 75.535 seconds. That run included the real smooth-PV gradient/Armijo descent at all three beta values and synthetic schema-7 FIT-lineage validation. The root's subsequent final independent unique harness passed 181/181 tests with zero skips in 76.519 seconds; the server harness passed 181/181 in 13.346 seconds.
 - The consumed schema-8 plan hash and closed schema-7 FIT-lineage validator passed. The schema-7 and schema-8 attempts are immutable; the schema-8 report records no qualifying checkpoint and is validated without using calibration metrics.
 - Grok 4.7 and Muse completed read-only reviews of the schema-8 implementation, focused test follow-up and documentation corrections, with no code blockers. These completed schema-8 reviews do not imply completion of the later diagnostic review. The required Claude Opus 5.5 High review remains pending because the exact model is unavailable under the account usage limit until November 3, 2026. No substitute review is represented as completed.
-- The built-in LaTeX compiler succeeded on 2026-10-10 for manuscript source SHA-256 `fd2488d6e366d4dc95d9a28eae788ac9c92664a11a4b0bbf6ff3e45f048fbe1e`. This confirms source compilation only; no visual PDF inspection or PDF export is recorded.
+- The built-in LaTeX compiler succeeded on 2026-10-10 for manuscript source SHA-256 `3c3e962afc83156d1b4c611c071ab1c80de48aef0756ce301a251eabc871eec2`. The three PNG charts were visually inspected by the root; no manuscript PDF visual inspection or manuscript PDF export is recorded; the three standalone chart PDFs were generated.
 
 ## Unresolved author and publication details
 

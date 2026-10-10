@@ -8,6 +8,25 @@ same three frozen 49-weight vectors were applied to every layout: the
 schema-7 event candidate, the cached-plan reference, and the cached best-known
 source. No source was changed, ranked, or selected using these measurements.
 
+## Original Neural-ILT results reported in the supplied PDF
+
+The supplied anonymous five-page review copy, *Physics-Informed Hotspot Detection via Neural-ILT Training: A PV-Band Based Approach on LithoBench* (pp. 3–4), reports its own pretrained Neural-ILT `Init` versus PV-band-aware `Fine-tuned` results, averaged over its stated 10-case MetalSet test split. These values are transcribed from the PDF and were not reproduced here:
+
+| Original-paper metric | Init | PV-band-aware fine-tuned | Change reported in PDF |
+| --- | ---: | ---: | ---: |
+| L2 pattern error | 36,688.4 | 27,492.4 | −25.1% |
+| PV-band area | 42,659.3 | 42,864.5 | +0.5% |
+| EPE count | 7.3 | 2.0 | −72.6% |
+| Mask shots | 472.2 | 513.2 | +8.6% |
+
+The original setup describes Neural-ILT mask optimization on MetalSet with LithoBench Quasar illumination, resist threshold 0.225 and steepness parameter $\alpha=85$; its process corners jointly vary dose by $\pm2\%$ and defocus by $\pm25$ nm. The current transfer check instead applies frozen source vectors to fixed StdMetal/StdContact masks with the adapted scalar-Abbe evaluator ($\alpha=50$, zero focus), and reports group-normalized PV-band and binary XOR errors. It does not train or evaluate the original Neural-ILT mask model, report EPE or mask shots, or match the original process window. The original PDF gives no timing measurements, so the current paired 9.6-fold grid/event search-time ratio is not an end-to-end Neural-ILT speedup or a direct head-to-head comparison. The PDF's introduction claims four LithoBench subsets, while its setup and quantitative table describe MetalSet and 10 test cases; its heatmap-statistics section separately refers to four MetalSet cases, so generalization scope is internally inconsistent.
+
+SHA-256 of the supplied PDF copy: `b912bfd1a37a497e46f41a4536c245764c6cb1b7c2fec0fbd6a44fdd8501a085`.
+
+## Comparison baselines
+
+The quality plots compare the event candidate with two internal frozen vectors: the cached-plan reference and the cached best-known source. The runtime plot compares event proposals with the paired uniform $k/256$ segment grid on the same frozen workload. These are within-study comparators; they do not compare against the original published NeuralILT baseline or an end-to-end Tensor-of-Light pipeline. The GLP transfer check uses an adapted scalar-Abbe model and is not official SOCS scoring.
+
 The input inventory contained 271 StdMetal and 165 StdContact files. Exact
 raster aliases were collapsed to the lexicographically first representative,
 leaving 220 unique metal and 165 unique contact masks (385 total). Scores use
@@ -93,6 +112,22 @@ lie below zero and exact numerical/hard-mask parity did not pass. Therefore
 these measurements do not support a source-quality superiority claim. They
 also do not show that the candidate is broadly better than the cached
 best-known vector. There is no external-runtime comparison in this run.
+
+## Visual summaries
+
+The deterministic plotting script reads only the frozen quality result and the two captured timing reports. It performs no scoring, optimization, or new experiment. Each chart is exported as PNG for inspection and PDF for print-quality reuse.
+
+![Candidate minus frozen-reference and best-known deltas with descriptive group-bootstrap intervals](../paper/figures/transfer-quality-deltas.png)
+
+*Figure 1. The forest plot reports candidate-minus-comparator deltas for PV-band, nominal mismatch, and worst-dose mismatch in pooled, StdMetal, and StdContact scopes. Values are percentage points of normalized rates; negative values indicate lower error. Pooled intervals use linked group components and are descriptive.* [PDF](../paper/figures/transfer-quality-deltas.pdf)
+
+![Absolute nominal and worst-dose mismatch by source and layout family](../paper/figures/transfer-absolute-errors.png)
+
+*Figure 2. Absolute error fractions retain the large StdContact errors visible: candidate equal-group means are 86.6% nominal and 89.9% worst-dose.* [PDF](../paper/figures/transfer-absolute-errors.pdf)
+
+![Matched seed-repeat runtime ratios for event and uniform-grid source search](../paper/figures/paired-runtime-ratios.png)
+
+*Figure 3. Each point is a paired uniform-grid/event arm-time ratio for the fixed seed and repeat. The medians are 9.582 for uncached v1 and 9.598 for cache-enabled v2; these describe this CPU search workload and are not hardware speedups.* [PDF](../paper/figures/paired-runtime-ratios.pdf)
 
 ## Reproducibility and chronology
 
