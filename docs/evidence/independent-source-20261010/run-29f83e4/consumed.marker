@@ -1,0 +1,7 @@
+{
+  "consumed_utc": "2026-10-10T16:07:57Z",
+  "launcher_git_head": "29f83e4d155b8792c8aebf1ebef5cc0c46505746",
+  "protocol_file": "/home/daniel/experiments/independent-source-validation-20261010/freeze-29f83e4/protocol.json",
+  "protocol_sha256": "c9fccd1bc8a27c10dbf5a5b437d36de50e0ec1532b00c28eb3f3190cbe327ebb",
+  "run_nonce": "423da046ce5b4630866c03d279db4e2a"
+}

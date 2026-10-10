@@ -31,9 +31,7 @@ does not scale, crop, or clip geometry. Target masks, GLP file hashes, raster
 hashes, vector hashes, source-code hashes, and dataset commit are frozen before
 scoring.
 
-The fixed scalar Abbe model uses NA 1.35, 193 nm wavelength, 9×9 source points
-inside sigma 0.9 with sigma inner 0.3, zero focus, doses 0.98/1/1.02, threshold
-0.225, and steepness 50. Sources are supplied directly as float32 weights;
+The fixed scalar Abbe model uses NA 1.35, 193 nm wavelength, 49 source points on a 9×9 grid inside the sigma 0.9 pupil disk, zero focus, doses 0.98/1/1.02, threshold 0.225, and steepness 50. The sigma-inner value 0.3 defines an initialization prior only; it does not exclude source points from these fixed vectors. Sources are supplied directly as float32 weights;
 they are not renormalized. For each layout, the evaluator prepares the
 source-independent GPU basis once, transfers its float32 intensities to CPU
 once, and contracts each fixed source vector on one CPU thread. This weighted
@@ -113,3 +111,17 @@ bootstrap upper bound below zero, nonincreasing group-mean nominal and
 worst-dose spatial mismatch fractions versus the reference, and no blank
 candidate layout. Nonincreasing printed-area discrepancy alone is not enough
 to pass the fidelity gate.
+
+
+## Completed fixed-source run
+
+The completed 2026-10-10 run covered all 385 unique layouts with all three
+frozen vectors (1,155 scored rows, no runtime errors). Its registered primary
+claim gate is false: the pooled PV-band group-bootstrap interval crosses zero,
+and four source/layout records differ by one hard-mask pixel despite close
+aerial agreement. This evidence does not support a pooled quality-superiority
+claim. The full outcome, family summaries, parity rows, sensitivity results,
+provenance hashes, and failure chronology are documented in
+[`INDEPENDENT_SOURCE_RESULTS_20261010.md`](INDEPENDENT_SOURCE_RESULTS_20261010.md).
+The byte-exact frozen protocol and run outputs are retained under
+[`evidence/independent-source-20261010/`](evidence/independent-source-20261010/).

@@ -1,1 +1,4 @@
 docs/evidence/source-events-20261010/*.json -text
+*.json -text
+*.jsonl -text
+consumed.marker -text

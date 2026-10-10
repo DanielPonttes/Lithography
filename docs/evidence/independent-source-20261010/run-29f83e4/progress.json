@@ -1,0 +1,16 @@
+{
+  "completed_records": 1155,
+  "completed_utc": "2026-10-10T16:09:45Z",
+  "elapsed_seconds": 108.65486885898281,
+  "error": null,
+  "expected_records": 1155,
+  "fatal_error": null,
+  "last_error": null,
+  "last_layout_id": "StdMetal271:XOR2_X1__0_1.glp",
+  "last_source": "best_known",
+  "phase": "finished",
+  "result_file": "/home/daniel/experiments/independent-source-validation-20261010/run-29f83e4/result.json",
+  "result_file_sha256": "292dba0647c159e5015db6d81ab7cc431f63880f9eeb165300e09d803522eab1",
+  "started_utc": "2026-10-10T16:07:57Z",
+  "status": "complete"
+}

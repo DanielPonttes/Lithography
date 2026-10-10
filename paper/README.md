@@ -1,12 +1,12 @@
 # Manuscript draft status
 
-`conference_101719.tex` is a working draft about a fixed-mask, 49-weight source-illumination pilot. It distinguishes the measured source-only experiments from proposed future joint SMO--Neural-ILT and hotspot-classification work. The revised PDF has not been validated.
+`conference_101719.tex` is a working draft about a fixed-mask, 49-weight source-illumination pilot. It distinguishes measured source-only experiments from proposed future joint SMO--Neural-ILT and hotspot-classification work. The built-in LaTeX compiler successfully compiled source SHA-256 `fd2488d6e366d4dc95d9a28eae788ac9c92664a11a4b0bbf6ff3e45f048fbe1e` on 2026-10-10. No visual PDF inspection or PDF export was performed.
 
 ## Completed event-search comparison
 
 The manuscript now centers on the bounded event-versus-grid search described in [SOURCE_EVENT_RESULTS.md](../docs/SOURCE_EVENT_RESULTS.md). Two separately pinned protocols completed 15 pairs each: the median paired grid/event search-wall ratios were 9.582 without cache and 9.598 with isolated physical-float32 caching. Both preserved the same hard quality, with no additional PV-band improvement over the protected incumbent. The four captured JSON evidence files are linked from the results note.
 
-The cache-enabled server suite passed 233 tests. Muse completed supplemental implementation, numerical manuscript, and editorial closure reviews. Required exact Opus review remains quota-blocked; the integrated LaTeX compiler still fails while preparing its Windows helper, so the revised PDF is not validated. These runtime repeats use the same seven FIT layouts and are not independent generalization evidence.
+The cache-enabled server suite passed 233 tests. Muse completed supplemental implementation, numerical manuscript, and editorial closure reviews. Required exact Claude Opus 5.5 High review remains quota-blocked until November 3, 2026; no substitute review is represented as completed. The built-in LaTeX compiler succeeded on 2026-10-10 for source SHA-256 `fd2488d6e366d4dc95d9a28eae788ac9c92664a11a4b0bbf6ff3e45f048fbe1e`; this records compilation only, not visual PDF inspection or export. These runtime repeats use the same seven FIT layouts and are not independent generalization evidence.
 
 ## Frozen FIT evidence
 
@@ -50,10 +50,19 @@ timeout without a final review, with partial output preserved. Opus remains
 pending under the exact-model quota restriction below. Review status does
 not turn this small development-set gain into a quality or generalization claim.
 
+
+The independent fixed-source transfer evaluation (2026-10-10) scored three
+frozen vectors on 385 unique supplied StdMetal/StdContact GLP masks (1,155
+source/layout records). Its registered quality-claim gate was false: the
+pooled PV-band interval crossed zero and four source/layout checks differed by
+one hard-mask pixel. This adapted scalar-Abbe evaluation is a limited transfer
+check, not official SOCS or MaskOpt scoring, and supports no source-quality
+superiority claim. See [the complete results and evidence links](../docs/INDEPENDENT_SOURCE_RESULTS_20261010.md).
+
 - After schema-8 implementation and the two-test follow-up, `python -B -m unittest discover -s tests -p test_source_coverage.py` passed 51 tests and `python -B -m unittest discover -s tests -p test_source_robustness.py` passed 20 tests; the full local suite passed 174 tests with zero skips in 75.535 seconds. That run included the real smooth-PV gradient/Armijo descent at all three beta values and synthetic schema-7 FIT-lineage validation. The root's subsequent final independent unique harness passed 181/181 tests with zero skips in 76.519 seconds; the server harness passed 181/181 in 13.346 seconds.
 - The consumed schema-8 plan hash and closed schema-7 FIT-lineage validator passed. The schema-7 and schema-8 attempts are immutable; the schema-8 report records no qualifying checkpoint and is validated without using calibration metrics.
 - Grok 4.7 and Muse completed read-only reviews of the schema-8 implementation, focused test follow-up and documentation corrections, with no code blockers. These completed schema-8 reviews do not imply completion of the later diagnostic review. The required Claude Opus 5.5 High review remains pending because the exact model is unavailable under the account usage limit until November 3, 2026. No substitute review is represented as completed.
-- The built-in LaTeX compile attempt failed with a Windows helper/setup error. This does not establish a TeX source error; no PDF has been validated.
+- The built-in LaTeX compiler succeeded on 2026-10-10 for manuscript source SHA-256 `fd2488d6e366d4dc95d9a28eae788ac9c92664a11a4b0bbf6ff3e45f048fbe1e`. This confirms source compilation only; no visual PDF inspection or PDF export is recorded.
 
 ## Unresolved author and publication details
 
@@ -61,4 +70,4 @@ not turn this small development-set gain into a quality or generalization claim.
 - The third-author email was corrected from the supplied `.b` typo to `agostini@inf.ufpel.edu.br`, as listed on the [official UFPel page](https://wp.ufpel.edu.br/notcc/propostas/avaliacoes/propostas-2023-2/).
 - Author names, order, and affiliations were preserved; the email correction is recorded above. The original Downloads source remains untouched.
 
-The draft does not claim that joint SMO and Neural-ILT were implemented, that LithoBench or MaskOpt were evaluated, that generalization was demonstrated, or that the measured experiments improved process-window performance.
+The draft does not claim that joint SMO and Neural-ILT were implemented, that official SOCS or MaskOpt evaluation was performed, that generalization was demonstrated, or that the experiments improved process-window performance. The supplied StdMetal and StdContact GLP tiles were evaluated with the adapted scalar-Abbe fixed-vector transfer protocol summarized above; this is not official SOCS scoring and did not pass its quality-claim gate.

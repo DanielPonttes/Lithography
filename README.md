@@ -275,3 +275,14 @@ O [diagnóstico de segmentos de fonte](docs/SOURCE_SEGMENT_SWEEP.md) teve seus
 com melhor redução de 0,413% na PV-band dos três layouts de ajuste e fidelidade
 média preservada. Esse resultado pequeno no conjunto de desenvolvimento ainda
 não demonstra melhora na identificação de hotspots nem generalização.
+
+
+### Validação independente de fontes fixas
+
+A avaliação posterior com três vetores congelados cobriu 385 máscaras raster
+únicas de `StdMetal` e `StdContact`. A redução pontual agrupada da PV-band foi
+pequena (−0,0525% contra a referência), com intervalo de confiança que cruza
+zero; quatro registros tiveram divergência de um pixel na máscara binária
+entre rotas numéricas. O gate de qualidade não passou, portanto o resultado
+não sustenta superioridade da fonte. [Método e protocolo](docs/INDEPENDENT_SOURCE_VALIDATION.md)
+e [resultados e evidências auditáveis](docs/INDEPENDENT_SOURCE_RESULTS_20261010.md).
