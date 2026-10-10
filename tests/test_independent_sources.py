@@ -15,6 +15,13 @@ def glp_text(vertices, layer="M1"):
 
 
 class IndependentSourceGeometryTests(unittest.TestCase):
+    def test_pinned_upstream_head_is_the_full_40_character_commit(self):
+        self.assertEqual(
+            evaluator.EXPECTED_UPSTREAM_HEAD,
+            "9c74e82218e377eaf6d02d113fc1ce6e36c92aa6",
+        )
+        self.assertRegex(evaluator.EXPECTED_UPSTREAM_HEAD, r"^[0-9a-f]{40}$")
+
     def test_output_path_must_be_outside_common_benchmark_tree(self):
         with tempfile.TemporaryDirectory() as temporary:
             benchmark = Path(temporary) / "lithobench" / "benchmark"

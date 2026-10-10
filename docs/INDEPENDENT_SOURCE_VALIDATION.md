@@ -73,7 +73,7 @@ python scripts/evaluate_independent_sources.py freeze `
   --cached-plan <pinned-event-cached-candidate-plan.json> `
   --event-candidate docs/evidence/source-events-20261010/event_uncached_selected_candidate.json `
   --event-report docs/evidence/source-events-20261010/event_uncached_50e2d8f_benchmark_report.json `
-  --upstream-head 9c74e82218e377eaf6d02d113fc1ce6e36c92aa
+  --upstream-head 9c74e82218e377eaf6d02d113fc1ce6e36c92aa6
 ```
 
 The command prints the protocol SHA-256. Validate that exact hash before the
