@@ -1,0 +1,164 @@
+{
+  "candidate_id": "seed-29:schema7_endpoint:000014",
+  "event_plan_sha256": "854b81a18ebd36589a5b50f6316059bfd45fa502c767e6bbb6f148d76f71a7cf",
+  "event_report_sha256": "04b6e03caaac23cd21ef07f287fd02d493650d098051c0b8f665e528b64b14df",
+  "expected_hard_metrics": {
+    "new_fit_mean": {
+      "L2_pixels": 35.333333333333336,
+      "L2_worst_dose_pixels": 93.33333333333333,
+      "band_pixels": 160.66666666666666
+    },
+    "no_blank_positive_target_any_dose": true,
+    "original_fit_mean": {
+      "L2_pixels": 0.0,
+      "L2_worst_dose_pixels": 150.25,
+      "band_pixels": 234.5
+    },
+    "per_layout": [
+      {
+        "L2_pixels": 0,
+        "L2_worst_dose_pixels": 256,
+        "band_pixels": 512,
+        "layout_id": "train_vls_pitch24_width9",
+        "no_blank_positive_target_any_dose": true,
+        "per_dose_L2_pixels": [
+          256,
+          0,
+          256
+        ],
+        "positive_target_pixels": 768
+      },
+      {
+        "L2_pixels": 0,
+        "L2_worst_dose_pixels": 256,
+        "band_pixels": 256,
+        "layout_id": "train_hls_pitch28_width10",
+        "no_blank_positive_target_any_dose": true,
+        "per_dose_L2_pixels": [
+          256,
+          0,
+          0
+        ],
+        "positive_target_pixels": 4352
+      },
+      {
+        "L2_pixels": 0,
+        "L2_worst_dose_pixels": 59,
+        "band_pixels": 111,
+        "layout_id": "train_l_contours",
+        "no_blank_positive_target_any_dose": true,
+        "per_dose_L2_pixels": [
+          59,
+          0,
+          52
+        ],
+        "positive_target_pixels": 1114
+      },
+      {
+        "L2_pixels": 0,
+        "L2_worst_dose_pixels": 30,
+        "band_pixels": 59,
+        "layout_id": "train_t_junctions",
+        "no_blank_positive_target_any_dose": true,
+        "per_dose_L2_pixels": [
+          30,
+          0,
+          29
+        ],
+        "positive_target_pixels": 656
+      },
+      {
+        "L2_pixels": 40,
+        "L2_worst_dose_pixels": 118,
+        "band_pixels": 203,
+        "layout_id": "fit_coverage_finite_ribbons_v1",
+        "no_blank_positive_target_any_dose": true,
+        "per_dose_L2_pixels": [
+          87,
+          40,
+          118
+        ],
+        "positive_target_pixels": 8835
+      },
+      {
+        "L2_pixels": 17,
+        "L2_worst_dose_pixels": 73,
+        "band_pixels": 130,
+        "layout_id": "fit_coverage_asymmetric_line_ends_v1",
+        "no_blank_positive_target_any_dose": true,
+        "per_dose_L2_pixels": [
+          61,
+          17,
+          73
+        ],
+        "positive_target_pixels": 2996
+      },
+      {
+        "L2_pixels": 49,
+        "L2_worst_dose_pixels": 89,
+        "band_pixels": 149,
+        "layout_id": "fit_coverage_irregular_contacts_v1",
+        "no_blank_positive_target_any_dose": true,
+        "per_dose_L2_pixels": [
+          89,
+          49,
+          62
+        ],
+        "positive_target_pixels": 3313
+      }
+    ]
+  },
+  "weights": [
+    0.008316914621078532,
+    0.0,
+    0.0,
+    0.01574461941009709,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.028285551460363212,
+    0.0,
+    0.003530064405350764,
+    0.0023140530848291025,
+    0.031534553288650735,
+    0.03520026790745825,
+    0.0,
+    0.0,
+    0.004311070284577672,
+    0.00707109302025816,
+    0.002192196299825402,
+    0.0005065122444720053,
+    0.0317548783494318,
+    0.047118211537435936,
+    0.03189270152045733,
+    0.014611223831813035,
+    0.031200416546983537,
+    0.04667959131612791,
+    0.03125261140231261,
+    0.0,
+    0.0018374030264965199,
+    0.007102169278657662,
+    0.004930014274230449,
+    0.03688587530635315,
+    0.09836970975273464,
+    0.036392873472968844,
+    0.030146683997968066,
+    0.002348113830513537,
+    0.0034481852127472776,
+    0.022241548003760603,
+    0.02925045885575354,
+    0.08315343841829911,
+    0.10337337469470914,
+    0.06814671127589142,
+    0.0,
+    0.0,
+    0.016182769208479036,
+    0.046158413271961934,
+    0.027934682312692347,
+    0.008581045279788355
+  ],
+  "weights_f32_sha256": "901b22f41ef587357dab92e5ef80f557a9d0bdd22fc86560944d5b6dd7f58b41",
+  "weights_f64_sha256": "36c66f0b29bdeced656a4734d906bb5cd667c26daa6808e89dd1131e5159f3c6"
+}

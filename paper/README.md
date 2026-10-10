@@ -2,6 +2,12 @@
 
 `conference_101719.tex` is a working draft about a fixed-mask, 49-weight source-illumination pilot. It distinguishes the measured source-only experiments from proposed future joint SMO--Neural-ILT and hotspot-classification work. The revised PDF has not been validated.
 
+## Completed event-search comparison
+
+The manuscript now centers on the bounded event-versus-grid search described in [SOURCE_EVENT_RESULTS.md](../docs/SOURCE_EVENT_RESULTS.md). Two separately pinned protocols completed 15 pairs each: the median paired grid/event search-wall ratios were 9.582 without cache and 9.598 with isolated physical-float32 caching. Both preserved the same hard quality, with no additional PV-band improvement over the protected incumbent. The four captured JSON evidence files are linked from the results note.
+
+The cache-enabled server suite passed 233 tests. Muse completed supplemental implementation, numerical manuscript, and editorial closure reviews. Required exact Opus review remains quota-blocked; the integrated LaTeX compiler still fails while preparing its Windows helper, so the revised PDF is not validated. These runtime repeats use the same seven FIT layouts and are not independent generalization evidence.
+
 ## Frozen FIT evidence
 
 **Schema 6** is recorded in `schema6_a7f5104_report.json` (SHA-256 `1b830b964b9e8ccb84f4e8306e7419a2be221e687222ded57a4171894747289c`). All five seeds completed 204 scheduled steps with four diagnostic snapshots, used distinct feasible starts with no fallback, and produced zero qualified checkpoints. Each had three accepted updates total and 201 stationary iterations. The minimum pairwise start distance was L1 = 0.37452050414042987; runtime was 642.929195 seconds. The last new-three FIT checkpoint tied reference PV-band and worst-dose means at 161.333333 and 93.333333 pixels, while nominal L2 rose from 35.333333 to 35.666667. Calibration remained closed; final3 was never indexed or evaluated.
@@ -52,7 +58,7 @@ not turn this small development-set gain into a quality or generalization claim.
 ## Unresolved author and publication details
 
 - The authors report an accepted prior SBCCI paper on Neural-ILT/PV-band heatmap fine-tuning. Its title, author list, proceedings name, year, pages, and DOI/URL need confirmation before adding a citation.
-- The third-author email is retained exactly from the supplied source as `agostini@inf.ufpel.edu.b`. Its `.b` ending needs author confirmation and was not guessed or corrected.
-- Author names, order, affiliations, and supplied contact strings were preserved. The original Downloads source remains untouched.
+- The third-author email was corrected from the supplied `.b` typo to `agostini@inf.ufpel.edu.br`, as listed on the [official UFPel page](https://wp.ufpel.edu.br/notcc/propostas/avaliacoes/propostas-2023-2/).
+- Author names, order, and affiliations were preserved; the email correction is recorded above. The original Downloads source remains untouched.
 
 The draft does not claim that joint SMO and Neural-ILT were implemented, that LithoBench or MaskOpt were evaluated, that generalization was demonstrated, or that the measured experiments improved process-window performance.

@@ -4,7 +4,7 @@
 \usepackage{url}
 
 \begin{document}
-\title{A Fixed-Mask Pixelated Illumination Pilot Toward Hotspot-Aware Lithographic Optimization}
+\title{Event-Driven Search of Pixelated Illumination Sources Under Fixed-Mask Lithography Constraints}
 
 \author{\IEEEauthorblockN{1\textsuperscript{st} William de Almeida Pavinato}
 \IEEEauthorblockA{\textit{Centro de Desenvolvimento Tecnológico}\\
@@ -22,36 +22,35 @@ dhspbarretos@inf.ufpel.edu.br}
 \IEEEauthorblockA{\textit{Centro de Desenvolvimento Tecnológico}\\
 \textit{Universidade Federal de Pelotas}\\
 Pelotas, Brasil\\
-\texttt{agostini@inf.ufpel.edu.b}}
+\texttt{agostini@inf.ufpel.edu.br}}
 }
 
 \maketitle
 
 \begin{abstract}
-This paper documents a source-only lithography pilot, separate from proposed joint source--mask optimization (SMO) and Neural-ILT work. The pilot optimizes 49 nonnegative pixelated illumination weights with unit total flux while holding seven FIT layouts fixed, using a scalar Abbe fixed-basis model and dose-weighted sigmoid resist. Three completed objective variants used five distinct feasible starts and completed their 204-step schedules, but none produced a checkpoint that passed the registered FIT gates. For schema 8, the new-layout mean was 161.333/35.667/93.333 pixels for PV-band, nominal $L_2$, and worst-dose $L_2$, compared with reference means 161.333/35.333/93.333. Calibration remained closed, and no final3 layout was indexed or evaluated. A subsequent fixed-grid diagnostic evaluated 5,140 source mixtures and found a best new-layout PV-band mean of 160.667 pixels, a 0.413\% decrease with unchanged mean nominal and worst-dose errors; one layout's nominal error nevertheless increased. These FIT results do not demonstrate process-window improvement, hotspot detection, generalization, or official-benchmark performance.
+We evaluate a bounded event-driven search of 49 unit-flux pixelated illumination weights with masks fixed across seven FIT layouts in a scalar Abbe model. Along a source segment, aerial intensity is affine in its interpolation parameter; event proposals comprise endpoints, ideal float64 crossings of $dI(\lambda)=0.225$, and interval midpoints. Candidate qualification uses the canonical float32 hard-metric evaluator and an uncached golden audit. In a prospectively frozen, cache-disabled comparison over five fixed seeds and three paired timing repeats, event and $k/256$ grid searches preserved the same reference, seed initialization, and previously qualified source as incumbents. The event arms evaluated 1,200 candidates in a median 6.643 seconds, while the grid arms evaluated 15,465 in a median 60.649 seconds; the median paired grid-to-event arm-wall-time ratio was 9.582. A separately pinned cache-enabled protocol reproduced the same best candidate identities, ranks, and hard metrics in all 30 arms, with a median paired ratio of 9.598. Event search improved checkpoint rank in 15/15 arms versus 0/15 for the grid, but neither method improved hard PV-band beyond the preserved best-known source. Direct simulator, weighted-basis, and canonical CPU checks agreed on a selected event vector. Relative to the fixed reference, it reduced the new-layout PV-band total by two pixels, preserved nominal and worst-dose means, and had a one-pixel nominal tradeoff on one layout. These finite FIT results establish neither global optimality nor process-window, hotspot-detection, or generalization performance.
 \end{abstract}
 
 \begin{IEEEkeywords}
-computational lithography, illumination-source optimization, source-mask optimization, inverse lithography, process variation
+computational lithography, illumination-source optimization, event-driven search, hard PV-band metrics, fixed-mask lithography
 \end{IEEEkeywords}
 
 \section{Introduction}
-Optical proximity effects make it difficult to transfer a target layout to a wafer with low print error. Computational lithography studies models and optimization methods for this task, including source optimization and inverse lithography \cite{hopkins,neuralilt2}. Public benchmarks such as LithoBench support comparison across lithography and mask-optimization tasks \cite{lithobench}. Such prior work motivates joint approaches, but does not establish that a particular source-only experiment improves printability.
+Optical proximity effects make it difficult to transfer a target layout to a wafer with low print error. Computational lithography studies models and optimization methods for this task, including source optimization and inverse lithography \cite{hopkins,neuralilt2}. Public benchmarks such as LithoBench support comparisons across lithography and mask-optimization tasks \cite{lithobench}. This paper studies a narrower computational question: how to search source-only feasible mixtures efficiently when the masks are fixed and a previously qualified source must remain available throughout the search.
 
-This paper reports a deliberately narrower result: a fixed-mask pilot that varies only the 49 weights of a pixelated illumination source. All seven FIT layouts remain fixed. No mask pixels or neural-network parameters are optimized, and the experiment does not train a hotspot classifier. An earlier October 7 attempt fell back to the same reference for all five seeds after its jittered starts failed the guard audit. The October 9 schema-6, schema-7, and schema-8 runs used distinct feasible starts, but none produced a checkpoint that met the qualification gate.
+The experiment varies only 49 nonnegative weights of a pixelated illumination source with unit total flux. Four original FIT layouts and three fixed synthetic FIT layouts are held constant. Earlier source-optimization variants and a 5,140-slot fixed-grid segment diagnostic provide context: the optimizer checkpoints did not pass all registered FIT gates, while the diagnostic identified a qualified source with a two-pixel reduction in aggregate PV-band count on the three new layouts. Its nominal error increased on one layout, illustrating why both aggregate and per-layout results matter. The event-search study preserves that best-known source as an incumbent and compares threshold-event proposals with a uniform segment grid under a frozen, uncached protocol.
 
-This pilot is motivated by earlier work in the broader project on Neural-ILT with PV-band heatmap fine-tuning. Joint SMO--Neural-ILT and heatmap-based hotspot analysis remain future work.
+Robust pixelated source--mask optimization has previously been studied using a three-dimensional partially coherent imaging model \cite{robustsmo}. More recent bilevel work optimizes coupled source and mask variables using an accelerated Abbe model \cite{bismo}. These formulations provide context, but this source-only experiment holds masks and focus fixed and makes no quality claim relative to those methods. Joint SMO--Neural-ILT and heatmap-based hotspot analysis remain separate future work.
 
 \medskip
-\noindent\textbf{Contributions.} This draft:
+\noindent\textbf{Contributions.} This paper:
 \begin{itemize}
-    \item specifies the implemented 49-weight, fixed-mask illumination experiment and distinguishes its differentiable training objective from the hard PV-band metric;
-    \item reports the frozen schema-6, schema-7, and schema-8 FIT outcomes, including zero qualified optimizer checkpoints, a subsequent qualifying FIT-grid point, and the closed calibration boundary; and
-    \item distinguishes the measured smooth-PV ablation from a proposed, unimplemented mixed-integer hard-PV diagnostic and from future joint mask/source optimization.
+    \item defines a bounded event-driven proposal scheme for source segments from the affine intensity relation, while retaining canonical float32 hard-metric qualification and a golden audit;
+    \item reports a prospectively frozen uncached comparison against a uniform $k/256$ grid, with identical protected incumbents, five fixed seeds, and three paired timing repeats; and
+    \item directly verifies a selected event-search source against the lithography simulator, weighted-basis evaluator, and canonical CPU metrics, and reports its aggregate and per-layout FIT tradeoffs.
 \end{itemize}
+The comparison concerns quality and elapsed time for this finite workload. It is not a claim of exhaustive search, global optimality, GPU speedup, independent statistical replication, or generalization to held-out layouts.
 
-
-Robust pixelated source--mask optimization has previously been studied using a three-dimensional partially coherent imaging model \cite{robustsmo}. More recent bilevel work optimizes the coupled source and mask variables using an accelerated Abbe model \cite{bismo}. Those formulations provide context for the proposed extension; the present experiment holds masks and focus fixed and cannot inherit their reported quality gains.
 
 \section{Background and Metrics}
 \subsection{Forward Lithography and the Implemented Model}
@@ -92,6 +91,17 @@ The pupil is discretized on a $9\times9$ grid in pupil coordinates $(u,v)$. The 
 
 The source is the only optimized variable. Four original FIT layouts and three fixed synthetic FIT layouts form the seven-layout objective. Their masks and targets are held constant during optimization. Calibration data were excluded from optimization and selection; the final3 layouts were never indexed or evaluated.
 
+\subsection{Event-Driven Segment Proposals}
+For source endpoints $\mathbf{s}_0$ and $\mathbf{s}_1$, define the segment
+\begin{equation}
+ \mathbf{s}(\lambda)=(1-\lambda)\mathbf{s}_0+\lambda\mathbf{s}_1,
+ \qquad 0\leq\lambda\leq1.
+ \label{eq:segment}
+\end{equation}
+For each fixed mask and source-basis raster, aerial intensity along this segment is affine in $\lambda$. At dose $d$, binary printing changes ideally where $dI_{\mathbf{s}(\lambda)}(x,y)=0.225$, the threshold induced by the sigmoid resist response. Event proposals include segment endpoints, threshold-crossing values computed from the float64 source/basis representation, and interval midpoints between ordered event values. Duplicate proposals are removed deterministically. The implementation has a cap of 257 event proposals per segment; none of the segments in the completed comparison was truncated.
+
+These ideal float64 events guide proposal generation only. Every candidate is evaluated using the canonical float32 hard-metric path; every hard-qualified candidate also receives a fresh uncached audit at the original host CPU thread count. Rounding can move a float32 threshold transition relative to the ideal crossing, and finite event/midpoint proposals can miss narrow qualifying intervals. This procedure is neither an exhaustive enumeration of float32 transitions nor a certificate of continuous or global optimality.
+
 \subsection{Optimization and Qualification}
 \label{sec:optimization}
 The registered solver is a Frank--Wolfe procedure with linear minimization over the guarded source-weight domain. Each seed has 68 steps at each of $\beta=200,400,800$, for 204 scheduled steps. Hard metrics are recorded at registered checkpoints. Schema 6 weights all seven layouts equally in its critical-softcount loss; schema 7 uses static equal weights over only the three new FIT layouts. Schema 8 used a direct smooth-PV surrogate (not the binary hard PV-band metric), with per-layout loss
@@ -104,15 +114,17 @@ averaged equally over those same three layouts. Here $\beta$ is the optimizer co
 A checkpoint can qualify only if it preserves the original FIT limits (mean PV-band area at most 234.5 pixels, mean nominal $L_2$ equal to zero, and mean worst-dose $L_2$ at most 150.25 pixels), strictly improves the new-three mean PV-band relative to the fixed seed-17 reference, does not worsen the new-three nominal or worst-dose $L_2$ means, has no blank positive target at any tested dose, and passes the registered nominal-polytope and critical-guard audits. Calibration is opened only after all five seeds yield complete, qualified FIT vectors; it is not an optimizer input or tie-breaker.
 
 \section{Experimental Setup}
-The primary evidence is the frozen October 9 schema-6, schema-7, and schema-8 FIT reports, identified by full SHA-256 in the accompanying README. Each used seeds 17, 29, 43, 71, and 101 with distinct feasible starts and no fallback. Schema 6 completed 204 scheduled steps and four diagnostic snapshots per seed. Its minimum pairwise start distance was $L_1=0.374521$; each run had three accepted updates total and 201 stationary steps. All five schema-6 runs reached the same final FIT source.
+The earlier source-optimization results are the frozen October 9 schema-6, schema-7, and schema-8 FIT reports, identified by full SHA-256 in the accompanying README. Each used seeds 17, 29, 43, 71, and 101 with distinct feasible starts and no fallback. They provide the source endpoints and prior FIT context for the event-search comparison. Schema 6 completed 204 scheduled steps and four diagnostic snapshots per seed. Its minimum pairwise start distance was $L_1=0.374521$; each run had three accepted updates total and 201 stationary steps. All five schema-6 runs reached the same final FIT source.
 
 The schema-6 report status is \texttt{no\_fit\_qualified\_checkpoint}; every seed had zero qualified checkpoints. Total runtime was 642.929195 seconds. The schema-7 report has the same failed status and zero qualified checkpoints; its five seeds completed 204 steps and four diagnostic snapshots, with one accepted update and 203 stationary iterations per seed. Total runtime was 586.786348 seconds. The schema-7 final vectors share one float32 hash, while their float64 values differ only at the last bits (maximum pairwise $L_1$ distance $2.6946\times10^{-14}$). Schema 8 also completed all 204 steps and eight diagnostic snapshots per seed (four critical-softcount and four smooth-PV); each seed had three accepted updates total and 201 stationary iterations. Its five distinct starts were the same feasible starting vectors as schema 6, with no fallback. All five schema-8 seeds reached a common float64 endpoint identity; runtime was 683.377778 seconds. Calibration remained closed for all three runs, and final3 layouts were never indexed or evaluated. The earlier October 7 schema-5 fallback attempt is historical context, not an independent replicate.
 
+The prospective event-versus-grid comparison used the same frozen source paths and FIT targets for both methods. For each of the five seeds, four fixed source segments were searched. Event arms proposed endpoints, threshold events, and interval midpoints; grid arms evaluated $\lambda=k/256$ for $k=0,\ldots,256$ on those same segments. Both methods started with the identical protected reference, that seed's feasible initialization, and the previously selected qualified source (slot 4755, seed group 101). Each arm had a 1,031-candidate ceiling and a 600-second wall-time ceiling. In uncached v1, candidate scoring was uncached in both methods. The primary scoring thread count was one, and every qualified candidate was audited uncached using the original host configuration of 24 CPU threads. Optical and basis setup was shared outside arm timing (4.285 seconds in v1; 4.129 seconds in v2). The five seeds were repeated in three paired timing rounds, with arm order alternated; these are repeated measurements on the same fixed layouts, not independent data groups. Calibration stayed closed and final3 layouts were never indexed. A second prospectively frozen cache-enabled v2 protocol used a distinct plan (SHA-256 \texttt{777393f20ca3ae28f9b74a61eb4d0d5fc488280ed793cbeaa1baa5c2bd1227dc}) and attempt marker, with the same inputs, paths, candidate counts, caps, and protected sources. Its optional physical float32 cache was scoped by method and timing repeat, shared across the five seeds within that scope, and never crossed between methods or repeats. Cache keys used the exact 49 little-endian float32 source bytes and pinned physical context; payloads contained canonical per-layout hard counts only. Float64 feasibility checks, soft-rank computation, and every 24-thread golden audit remained uncached.
+
 \section{Results}
-Table~\ref{tab:reference} reports the original-FIT reference and compares the new-three reference with the last FIT checkpoints from schemas 6, 7, and 8. Schema 6 ties PV-band and worst-dose means but has one additional aggregate nominal mismatch. Schema 7 improves nominal $L_2$ by one mismatch while worsening PV-band and worst-dose means. Schema 8 ties PV-band and worst-dose means and has one additional aggregate nominal mismatch.
+Table~\ref{tab:reference} reports the original-FIT reference and mean hard metrics for prior optimizer checkpoints, the earlier segment-grid diagnostic, and the directly confirmed event-selected source. The event-selected vector matches the earlier diagnostic in aggregate new-layout counts; the paired comparison below evaluates how each proposal rule recovers its best checkpoint under the frozen tie-breaks.
 
 \begin{table*}[t]
-\caption{Reference, last optimizer-checkpoint, and segment-diagnostic metrics. Values are mean pixel counts over layouts in each group.}
+\caption{Reference, last optimizer-checkpoint, prior segment-grid diagnostic, and event-selected candidate metrics. Values are mean pixel counts over layouts in each group.}
 \label{tab:reference}
 \centering
 \begin{tabular}{lrrr}
@@ -124,10 +136,44 @@ New three FIT reference & 161.333 & 35.333 & 93.333 \\
 Schema-6, new three FIT & 161.333 & 35.667 & 93.333 \\
 Schema-7, new three FIT & 162.000 & 35.000 & 94.333 \\
 Schema-8, new three FIT & 161.333 & 35.667 & 93.333 \\
-Segment diagnostic, new three FIT & 160.667 & 35.333 & 93.333 \\
+Prior segment diagnostic, new three FIT & 160.667 & 35.333 & 93.333 \\
+Event-selected source, new three FIT & 160.667 & 35.333 & 93.333 \\
 \hline
 \end{tabular}
 \end{table*}
+
+\subsection{Prospective Event-versus-Grid Search}
+The uncached v1 comparison completed all 15 seed-by-repeat pairs (30 search arms). Event search evaluated 1,200 candidates across its 15 arms, with 76--88 candidates per arm. The grid evaluated 15,465 candidates, exactly 1,031 per arm. The event proposal audit recorded 60 segment instances across the three repeats; the largest proposal set contained 33 events, below the 257-per-segment cap. Neither arm reached its 600-second ceiling; each completed its candidate cap or finite proposal set.
+
+\begin{table*}[t]
+\caption{Completed event-versus-grid comparisons. Each protocol row covers 15 arms. Arm times include periodic report writes; paired ratios are shown once per protocol and are medians of per-pair grid/event ratios.}
+\label{tab:eventgrid}
+\centering
+\begin{tabular}{llrrrrr}
+\hline
+Protocol & Search & Evaluations & Median wall (s) & Paired ratio & Rank gain & Hard-PV gain \\
+\hline
+Uncached v1 & Events & 1,200 & 6.643 & 9.582 & 15/15 & 0/15 \\
+ & Grid & 15,465 & 60.649 & -- & 0/15 & 0/15 \\
+Cache-enabled v2 & Events & 1,200 & 6.221 & 9.598 & 15/15 & 0/15 \\
+ & Grid & 15,465 & 58.751 & -- & 0/15 & 0/15 \\
+\hline
+\end{tabular}
+\end{table*}
+
+Across the 15 paired observations, the median grid-to-event ratio of full-arm wall time was 9.582, with a range of 6.666--18.876. Event arms completed their finite proposal workload in a median 6.643 seconds (range 5.609--9.450); grid arms completed the 1,031-evaluation cap in a median 60.649 seconds (range 54.248--126.747). This is a paired quality--time comparison for the pinned workload, not a hardware or GPU speedup claim. Proposal generation, candidate scoring, qualified-candidate audits, and periodic report I/O are included in arm wall time; shared optical/basis preparation is excluded. Phase timings in the report include subsets of arm work and should not be summed to reconstruct wall time.
+
+Event arms improved the existing checkpoint rank in 15/15 pairs, while grid arms improved it in 0/15. This rank uses the frozen hard-metric ordering followed by the existing soft-objective and LP-distance tie-breaks. The event candidates did not improve hard PV-band beyond the common protected best-known source in any arm; hard-PV improvement was 0/15 for both methods. Thus the rank result is a better finite-workload selection under the registered tie-breaks, not evidence of additional hard-pixel gain. The repeated seed groups are descriptive and do not support an independent-sample significance claim.
+
+The cache-enabled v2 comparison used a fresh prospective plan and attempt marker, but the same five seeds, paths, protected sources, candidate counts, ranking, and hard gates. Its median arm times were 6.221 seconds for events and 58.751 seconds for the grid; the median paired grid-to-event ratio was 9.598 (range 7.303--18.334). The cache returned 888/1,200 event hard-count lookups (74.000%) and 9,318/15,465 grid lookups (60.252%). Across all 30 corresponding method/seed/repeat arms, the best-qualified candidate IDs, full rank tuples, qualified hard-metric records, and improvement identities matched the uncached v1 outputs exactly. Both protocols had 15/15 event rank improvements, 0/15 grid rank improvements, and no hard-PV improvement beyond the preserved best-known source.
+
+An unrelated GPU job shared the server during both protocol windows. Cache-enabled runner tests overlapped the final uncached timing pair for about 20 seconds. These were tests, not another benchmark arm. Together with the shared host and sequential protocol windows, this prevents treating differences between cached and uncached medians as a causal estimate of cache benefit. The two protocols support reproducibility of the candidate/rank/metric outcome, not an isolated cache-speed claim.
+
+The directly confirmed event-native candidate was \texttt{seed-29:schema7\_endpoint:000014}. For its 49-weight vector, the direct simulator and weighted-basis aerials agreed within the recorded numerical tolerance, and the direct-GPU, weighted-basis-GPU, and canonical-CPU routes returned exactly matching per-layout hard counts for both candidate and reference across all seven FIT layouts. All registered aggregate hard gates passed. On the three new FIT layouts, the candidate changed PV-band counts from 205/130/149 to 203/130/149, nominal mismatches from 41/16/49 to 40/17/49, and worst-dose mismatches remained 118/73/89. The new-layout PV-band sum fell from 484 to 482 (0.413\%); nominal and worst-dose means were unchanged. The one-pixel nominal increase on asymmetric line ends is offset by a one-pixel decrease on finite ribbons, so the unchanged aggregate mean masks a per-layout tradeoff. The original-four FIT means remained at 234.5/0/150.25 pixels for PV-band, nominal $L_2$, and worst-dose $L_2$, respectively. No claim of per-layout non-regression is made.
+
+\subsection{Prior optimizer and segment-grid context}
+
+
 
 No optimized checkpoint passed the registered qualification gates. In schema 6, all five last checkpoints tied the reference PV-band and worst-dose $L_2$ means but had nominal $L_2$ mean 35.667 rather than 35.333, one additional aggregate nominal mismatch. In schema 7, the last new-three means were 162 PV-band pixels, 35 nominal mismatches, and 94.333 worst-dose mismatches. Relative to the reference, nominal $L_2$ improved by one aggregate mismatch, while aggregate PV-band count increased by two and worst-dose $L_2$ by three. The strict PV-band-improvement and no-worse nominal/worst-dose gates therefore failed. The five seeds within each run are computational restarts on the same fixed FIT layouts, not independent generalization evidence; a stationary Frank--Wolfe gap is not a certificate of global optimality. Calibration remained closed, and final3 layouts were never indexed or evaluated.
 
@@ -142,14 +188,14 @@ At the selected point, finite ribbons changed from 205 to 203 PV-band pixels and
 
 \section{Limitations and Planned Validation}
 \label{sec:limits}
-This is a source-only computational pilot on seven fixed FIT layouts. Focus was held at zero while dose varied by $\pm2\%$; consequently, the run does not demonstrate a focus--dose process window. It does not evaluate mask changes, a Neural-ILT model, hotspot labels, hotspot-classification metrics, or an official LithoBench or MaskOpt test set. The differentiable softcount must not be described as a measured hard PV-band or hotspot-detection result.
+This is a source-only computational study on seven fixed FIT layouts. Focus was held at zero while dose varied by $\pm2\%$; consequently, the run does not demonstrate a focus--dose process window. The event-versus-grid result covers only the 20 frozen source segments and the stated finite proposal/evaluation budgets. Its float64 event locations and bounded midpoint proposals are not an exhaustive float32 threshold partition; a different source path or a narrow interval can contain behavior not observed here. It does not evaluate mask changes, a Neural-ILT model, hotspot labels, hotspot-classification metrics, or an official LithoBench or MaskOpt test set. The differentiable softcount must not be described as a measured hard PV-band or hotspot-detection result.
 
 No final3 result is claimed; those layouts were never indexed or evaluated.
 
 The schema-6 feasible-start protocol and schema-7 static new-three critical-softcount ablation are implemented and benchmarked, but neither yielded a qualified checkpoint. Schema 8 is also implemented and benchmarked; its direct smooth-PV training objective did not yield a qualified checkpoint or improve the required hard FIT metrics. A direct hard-PV mixed-integer diagnostic is only a proposed read-only design; it has not been implemented or run. Any candidate would need a full float32 hard-gate audit; a global infeasibility claim would additionally require a certified bound that covers float32 threshold classification. The observed schema-8 failure does not prove that a qualifying source is infeasible. Future work will separately test joint source--mask optimization with a Neural-ILT model, define any hotspot target and evaluation metric, and conduct external evaluation on official LithoBench and MaskOpt data \cite{lithobench,maskopt}. Such evaluation requires a frozen protocol and independent test data; no generalization claim is made here.
 
 
-\subsection{Registered Source-Segment Diagnostic}
+\subsection{Prior Registered Source-Segment Diagnostic}
 A prospectively registered FIT-only diagnostic was implemented to examine intermediate source weights that the smooth optimizer checkpoints may have missed. For each of the five seeds, it registers four segments from the frozen reference to the schema-8 feasible start and the schema-6, schema-7, and schema-8 terminal vectors. Each segment uses $\alpha=k/256$, $k=0,\ldots,256$, giving 5,140 ordered slots. Each candidate is the unprojected float64 convex mixture $(1-\alpha)\mathbf{s}_{\mathrm{ref}}+\alpha\mathbf{s}_{\mathrm{end}}$ and receives its own feasibility and hard-metric audits. Duplicate slot provenance is retained.
 
 Screening uses the existing float32 raster evaluator with one CPU thread after exact hard-metric parity of the reference at the original host thread count. Every screen-qualified point is fully re-evaluated without cache at the original thread count before ranking. A negative screening result would concern this finite screening grid; it would not certify continuous-segment or global infeasibility. Calibration remains closed by design even if a FIT point passes, and final3 remains untouched. All 5,140 slots completed in 514.449706 seconds, and all five groups contained qualifying points. The selected result was fully re-evaluated at the original 24-thread configuration. The report and source-vector identities are recorded in the accompanying result documentation; calibration remained closed and final3 remained untouched.
@@ -158,7 +204,7 @@ Screening uses the existing float32 raster evaluator with one CPU thread after e
 A qualifying FIT point would establish only that the current source parameterization can meet the development gates. A quality claim additionally requires a frozen comparison on layouts not used to choose the source or revise the method, using matched masks, optical settings, dose conditions, and evaluation budgets. Both mean and per-layout PV-band, nominal fidelity, and worst-dose fidelity must be reported; five solver restarts on the same layouts do not provide independent data replication. Any hotspot-identification claim also requires an explicit hotspot definition, reference labels, and detection metrics. These evaluations have not been performed here.
 
 \section{Conclusion}
-We documented three completed fixed-mask, 49-weight optimizer experiments and a completed finite source-mixture diagnostic. The optimizer variants yielded no qualifying checkpoint, while the diagnostic found a two-pixel aggregate PV-band improvement on the three new FIT layouts with mean fidelity preserved. One layout's nominal error increased, and the best reduction was only 0.413\%. This establishes a qualifying point in the evaluated FIT grid and a need to track hard-metric incumbents; it does not establish a substantial quality gain, hotspot-detection improvement, generalization, or process-window robustness. Calibration remained closed and final3 untouched. A mixed-integer hard-PV diagnostic and joint SMO--Neural-ILT work remain unimplemented.
+This paper evaluated a bounded event-driven search of pixelated illumination weights for fixed-mask, fixed-focus FIT layouts. In two prospectively pinned protocols, event proposals required 1,200 evaluations over 15 arms, compared with 15,465 for a uniform segment grid. The uncached and cache-enabled cohorts had median paired full-arm wall-time ratios of 9.582 and 9.598, respectively; the shared-server timing context does not isolate cache benefit. Event search improved the registered checkpoint rank in all 15 paired runs, but neither method improved hard PV-band beyond the preserved qualified incumbent. A selected event vector was independently evaluated through direct-simulator, weighted-basis, and canonical-CPU paths; the hard counts agreed exactly across all seven FIT layouts. Relative to the reference it reduced the new-layout PV-band total by two pixels, with unchanged nominal and worst-dose means and a per-layout nominal tradeoff. These results support a limited quality--time finding for this frozen FIT workload. They do not establish exhaustive or globally optimal source search, process-window robustness, hotspot detection, or generalization. Calibration remained closed and final3 layouts were untouched.
 
 \begin{thebibliography}{00}
 \bibitem{hopkins}
