@@ -40,7 +40,8 @@ def valid_event_plan():
         }
     return {
         "schema_version": benchmark.SCHEMA_VERSION,
-        "objective_id": benchmark.OBJECTIVE_ID,
+        "objective_id": benchmark._objective_for_cache_policy(benchmark.CACHE_POLICY_OFF),
+        "cache_policy": benchmark.CACHE_POLICY_OFF,
         "status": "frozen_prospective_quality_time_plan",
         "fixed_fit_layout_hashes": coverage.PINNED_FIXED_FIT_LAYOUT_HASHES,
         "lineage_artifact_count": 14,
@@ -49,12 +50,123 @@ def valid_event_plan():
             "wall_clock_budget_seconds_per_arm_seed": benchmark.WALL_BUDGET_SECONDS,
             "event_candidates": "not an exhaustive threshold partition",
             "thread_count_stability": "captured original host thread count",
+            "cache_policy": benchmark.CACHE_POLICY_OFF,
+            "cache_scope": benchmark.CACHE_SCOPE_OFF,
+            "cache_key_and_payload": benchmark.CACHE_KEY_OFF,
         },
         "code_sha256": {}, "input_sha256": {}, "source_vectors": vectors,
     }
 
 
 class EventBenchmarkContractTests(unittest.TestCase):
+    def test_frozen_cache_policy_and_objective_are_strictly_pinned(self):
+        plan = valid_event_plan()
+        benchmark._validate_event_plan(plan)
+
+        cached = valid_event_plan()
+        cached["cache_policy"] = benchmark.CACHE_POLICY_PER_METHOD_REPEAT
+        cached["objective_id"] = benchmark.OBJECTIVE_ID_CACHED
+        cached["schema_version"] = benchmark.SCHEMA_VERSION_CACHED
+        cached["protocol"]["cache_policy"] = benchmark.CACHE_POLICY_PER_METHOD_REPEAT
+        cached["protocol"]["cache_scope"] = benchmark.CACHE_SCOPE_REPEAT
+        cached["protocol"]["cache_key_and_payload"] = benchmark.CACHE_KEY_REPEAT
+        benchmark._validate_event_plan(cached)
+
+        altered = copy.deepcopy(cached)
+        altered["protocol"]["cache_scope"] += "; cross-method cache allowed"
+        with self.assertRaisesRegex(ValueError, "budget differs"):
+            benchmark._validate_event_plan(altered)
+
+        unknown = copy.deepcopy(plan)
+        unknown["cache_policy"] = "global-unpinned-cache"
+        with self.assertRaisesRegex(ValueError, "cache policy"):
+            benchmark._validate_event_plan(unknown)
+
+        wrong_objective = copy.deepcopy(cached)
+        wrong_objective["objective_id"] = benchmark.OBJECTIVE_ID
+        with self.assertRaisesRegex(ValueError, "schema, objective"):
+            benchmark._validate_event_plan(wrong_objective)
+
+    def test_physical_f32_cache_reuses_exact_float32_equivalent_hard_counts(self):
+        plan_sha = "a" * 64
+        cache = benchmark._PhysicalF32HardMetricCache(
+            [], {}, {}, plan_sha256=plan_sha, method="event", repeat=0)
+        first = np.zeros(event_search.SOURCE_COUNT, dtype=np.float64)
+        first[0:2] = 0.5
+        rounded_same = first.copy()
+        rounded_same[0] += 1e-9
+        rounded_same[1] -= 1e-9
+        self.assertFalse(np.array_equal(first, rounded_same))
+        self.assertEqual(np.asarray(first, dtype="<f4").tobytes(),
+                         np.asarray(rounded_same, dtype="<f4").tobytes())
+
+        canonical = {"per_layout": [{"layout_id": "synthetic", "band_pixels": 2}],
+                     "new_fit_mean": {"band_pixels": 2}}
+        with mock.patch.object(benchmark, "_metrics", return_value=canonical) as score, \
+                mock.patch.object(benchmark.torch, "get_num_threads", return_value=1):
+            first_result = cache(first)
+            first_result["per_layout"][0]["band_pixels"] = 999
+            second_result = cache(rounded_same)
+        self.assertEqual(score.call_count, 1)
+        self.assertEqual(second_result["per_layout"][0]["band_pixels"], 2)
+        snapshot = cache.snapshot()
+        self.assertEqual(snapshot["lookup_count"], 2)
+        self.assertEqual(snapshot["hit_count"], 1)
+        self.assertEqual(snapshot["miss_count"], 1)
+        self.assertEqual(snapshot["entries"], 1)
+
+    def test_cache_is_warm_across_seeds_but_isolated_by_method_and_repeat(self):
+        rows, basis32, physical, plan_sha = [], {}, {}, "b" * 64
+        repeat0 = benchmark._new_repeat_metric_caches(
+            benchmark.CACHE_POLICY_PER_METHOD_REPEAT, rows, basis32, physical,
+            plan_sha, 0)
+        # The event cache object persists as seed 17 and seed 29 are visited.
+        event_for_seed17 = repeat0["event"]
+        event_for_seed29 = repeat0["event"]
+        self.assertIs(event_for_seed17, event_for_seed29)
+        repeat1 = benchmark._new_repeat_metric_caches(
+            benchmark.CACHE_POLICY_PER_METHOD_REPEAT, rows, basis32, physical,
+            plan_sha, 1)
+        self.assertIsNot(repeat0["event"], repeat0["grid"])
+        self.assertIsNot(repeat0["event"], repeat1["event"])
+        self.assertIn("method=event;paired_repeat=0", repeat0["event"].scope)
+        self.assertIn("method=grid;paired_repeat=0", repeat0["grid"].scope)
+        self.assertIn("paired_repeat=1", repeat1["event"].scope)
+        weights = np.zeros(event_search.SOURCE_COUNT, dtype=np.float64)
+        weights[0] = 1.0
+        with mock.patch.object(benchmark, "_metrics", return_value={"per_layout": []}) as score, \
+                mock.patch.object(benchmark.torch, "get_num_threads", return_value=1):
+            event_for_seed17(weights)
+            event_for_seed29(weights)
+            repeat0["grid"](weights)
+            repeat1["event"](weights)
+        self.assertEqual(score.call_count, 3)
+        self.assertEqual(repeat0["event"].snapshot()["hit_count"], 1)
+        self.assertEqual(repeat0["event"].snapshot()["miss_count"], 1)
+        self.assertEqual(repeat0["grid"].snapshot()["miss_count"], 1)
+        self.assertEqual(repeat1["event"].snapshot()["miss_count"], 1)
+
+    def test_golden_audit_uses_uncached_metrics_even_after_primary_cache_hit(self):
+        old_threads = benchmark.torch.get_num_threads()
+        weights = np.zeros(event_search.SOURCE_COUNT, dtype=np.float64)
+        weights[0] = 1.0
+        cache = benchmark._PhysicalF32HardMetricCache(
+            [], {}, {}, plan_sha256="c" * 64, method="grid", repeat=2)
+        metrics = {"per_layout": [{"layout_id": "fit", "band_pixels": 1}],
+                   "original_fit_mean": {"band_pixels": 1},
+                   "new_fit_mean": {"band_pixels": 1},
+                   "no_blank_positive_target_any_dose": True}
+        with mock.patch.object(benchmark, "_metrics", return_value=metrics) as score:
+            with mock.patch.object(benchmark.torch, "get_num_threads", return_value=1):
+                primary = cache(weights)
+            audit = benchmark._golden_thread_metric_audit(
+                [], {}, weights, {}, primary, old_threads)
+        self.assertEqual(score.call_count, 2)
+        self.assertTrue(audit["passed"])
+        self.assertEqual(cache.snapshot()["miss_count"], 1)
+        self.assertEqual(cache.snapshot()["hit_count"], 0)
+        self.assertEqual(benchmark.torch.get_num_threads(), old_threads)
+
     def test_event_audit_compacts_large_knot_lists_without_losing_counts_or_hash(self):
         plan = valid_event_plan()
         basis64 = {layout_id: np.zeros((event_search.SOURCE_COUNT, 1, 1), dtype=np.float64)
@@ -248,8 +360,13 @@ class EventBenchmarkContractTests(unittest.TestCase):
             self.assertEqual(incomplete["not_attempted_candidates"], 1)
             self.assertEqual(incomplete["not_attempted_interpretation"],
                              "not evidence of no qualified point")
+            self.assertEqual(incomplete["primary_metric_cache"]["policy"],
+                             benchmark.CACHE_POLICY_OFF)
+            self.assertEqual(incomplete["primary_metric_cache"]["lookup_count"], 0)
 
             journal_records = []
+            repeat_cache = benchmark._new_repeat_metric_caches(
+                benchmark.CACHE_POLICY_PER_METHOD_REPEAT, [], basis32, {}, "d" * 64, 0)
 
             def record_journal(event):
                 if event.get("type") == "candidate_audit":
@@ -261,11 +378,18 @@ class EventBenchmarkContractTests(unittest.TestCase):
                     "grid", 17, 0, plan, [], basis32, basis64, {}, {},
                     one_hot(5), reference, best, domain, targets_by_id, record_journal, 4,
                     retain_candidate_records=False,
+                    primary_metric_evaluator=repeat_cache["grid"],
                 )
             self.assertEqual(completed["status"], "complete")
             self.assertNotIn("candidate_records", completed)
             self.assertEqual(completed["candidate_audit_journal_records"], 4)
             self.assertEqual(len(journal_records), 4)
+            self.assertEqual(completed["primary_metric_cache"]["policy"],
+                             benchmark.CACHE_POLICY_PER_METHOD_REPEAT)
+            self.assertEqual(completed["primary_metric_cache"]["scope"],
+                             repeat_cache["grid"].scope)
+            self.assertEqual(completed["primary_metric_cache"]["lookup_count"], 4)
+            self.assertEqual(completed["primary_metric_cache"]["miss_count"], 4)
             self.assertTrue(all(record["method"] == "grid"
                                 and record["seed"] == 17
                                 and record["paired_repeat"] == 0
@@ -302,11 +426,15 @@ class EventBenchmarkContractTests(unittest.TestCase):
             manifest = root / "manifest.json"
             manifest.write_text("{}", encoding="utf-8")
             plan = {"expected_previous_sha256": "b" * 64,
+                    "objective_id": benchmark.OBJECTIVE_ID,
+                    "schema_version": benchmark.SCHEMA_VERSION,
+                    "cache_policy": benchmark.CACHE_POLICY_OFF,
                     "coverage_plan_sha256": "c" * 64,
                     "coverage_plan_file": str(root / "coverage-plan.json"),
                     "segment_plan_sha256": "d" * 64,
                     "segment_report_sha256": "e" * 64,
                     "selected_weights_file_sha256": "f" * 64,
+                    "cache_policy": benchmark.CACHE_POLICY_OFF,
                     "code_sha256": {}, "input_sha256": {},
                     "source_identity": {}, "lineage_artifact_count": 14,
                     "protocol": {}}

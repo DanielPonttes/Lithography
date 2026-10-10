@@ -98,9 +98,9 @@ report. The marker is intentionally not created by `preflight` or
 
 The comparison helper `fair_quality_runtime_protocol` specifies shared FIT
 inputs, the same preserved incumbents, the same hard evaluator and quality
-gates, equal candidate-count and wall-clock budgets, disabled cross-method
-score caches, setup and proposal-generation timing, paired run order, and the
-scope of incomplete results. A published quality-time comparison needs complete paired observations for
+gates, equal candidate-count and wall-clock budgets, method-isolated cache
+scopes, setup and proposal-generation timing, paired run order, and the scope
+of incomplete results. A published quality-time comparison needs complete paired observations for
 the same frozen workload hash. The runner is implemented below, but this
 document does not claim that its prospective event-versus-grid run has
 completed. The prior 5,140-point grid timing is context only, not a speedup
@@ -131,13 +131,18 @@ The fixed workload is five paired seeds with three paired repeats (30 arms).
 Each arm first scores the frozen reference, that seed's initial vector, and the
 preserved FIT-qualified slot 4755 incumbent. Event and grid arms share these
 incumbents, all seven FIT layouts, the canonical float32 hard evaluator, all
-source guards, a disabled score cache, and the same captured original-host
+source guards, the frozen cache policy, and the same captured original-host
 thread audit policy. Primary scoring uses one CPU thread. The runner then
 re-evaluates the protected reference and best-known source, plus each otherwise
 hard-qualified candidate, at the original host's `torch.get_num_threads()`
 count. A protected-vector count mismatch aborts; a candidate mismatch rejects
 that candidate. The original thread count is recorded in the report, and the
-one-thread setting is restored after every audit.
+one-thread setting is restored after every audit. In the optional cached
+objective, the primary cache stores only canonical hard counts; these golden
+checks always call the uncached evaluator. Per-arm primary-score seconds cover
+only one-thread cache misses, while golden-audit seconds are a subset of total
+candidate-scoring/audit and arm-wall seconds. These phase fields overlap; do
+not sum them as independent elapsed time.
 
 Each arm has a 600-second wall budget and a 1,031-attempt cap including the
 three distinct protected vectors; the grid has at most 1,028 additional
@@ -160,6 +165,11 @@ may come from soft terms or tie-breaks and is not itself evidence of additional
 hard-pixel coverage. An incomplete arm or unattempted candidate is not evidence
 that no qualifying point exists.
 
+The default freeze policy is `off`, which preserves direct uncached primary
+scoring. To measure the prior within-method, cross-seed reuse behavior, freeze
+with `--cache-policy per-method-repeat-physical-f32`. This policy creates a
+new objective identity (`prospective_source_event_vs_grid_quality_time_cached_physical_f32_v2`) and a new frozen-plan SHA256, so it consumes a distinct event marker. It creates one cache per method and paired repeat, shares that cache across the repeat's five seeds, and never shares entries across event/grid methods or repeats. Keys are SHA256 hashes of the exact 49 little-endian float32 weight bytes in the fixed pinned basis/target/physical context. Cached values contain only canonical hard-count metrics; float64 domain/nominal/critical guards and soft rank inputs are recalculated. Cache lookup, copies, and scoring count against the arm wall budget. Each arm and the complete run report lookups, hits, misses, entries, lookup/copy time, and actual primary hard-metric scoring time. Do not reuse an old plan or marker for this objective.
+
 All per-candidate records are appended once to `candidate_audit.jsonl` with
 method, seed, and repeat lineage. `progress.json` contains bounded arm
 summaries, not copies of the full candidate journal. The report and journal are
@@ -174,8 +184,10 @@ DATA=/home/daniel/experiments/robust-source-quality-20261005-766872
 PYTHON=/home/daniel/venvs/litho/bin/python
 cd "$REPO"
 
-# Metadata-only freeze. The expected hashes are the reviewed pinned inputs.
+# Metadata-only freeze for the cache-enabled v2 objective. For the original
+# uncached objective, omit --cache-policy and use a new output-plan filename.
 "$PYTHON" -B scripts/benchmark_source_events.py --mode freeze \
+  --cache-policy per-method-repeat-physical-f32 \
   --coverage-plan-file "$DATA/direct_pv_objective_candidate_plan.json" \
   --expected-coverage-plan-sha256 de435a135c44fad5346cbc2cc21985cd54042d4655b037d87df3bb4f132a1127 \
   --expected-previous-sha256 984dd65885ffc66b4eff3a70b4b8a81707841a777e8dd33ede9fe356daa5eb44 \
@@ -184,10 +196,10 @@ cd "$REPO"
   --segment-report-file "$DATA/segment_5fd31de_report.json" \
   --expected-segment-report-sha256 a66908b8a8b902bdcc1846a35c55ec4828080b9fba2499cbb6ebacdbff08d3b4 \
   --selected-weights-file "$DATA/segment_5fd31de_selected_fit.json" \
-  --output-plan-file "$DATA/source_event_quality_time_plan.json"
+  --output-plan-file "$DATA/source_event_quality_time_cached_plan_v2.json"
 
 # Copy the event-plan SHA256 printed by freeze into EVENT_PLAN_SHA256.
-EVENT_PLAN="$DATA/source_event_quality_time_plan.json"
+EVENT_PLAN="$DATA/source_event_quality_time_cached_plan_v2.json"
 EVENT_PLAN_SHA256='<sha256 printed by freeze>'
 
 # Metadata-only check. It consumes no marker and does not load FIT data.

@@ -7,6 +7,7 @@ one-use event marker before the original FIT loader, optics, or scoring.
 from __future__ import annotations
 
 import argparse
+import copy
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -34,7 +35,16 @@ from source_robustness import critical_corner_softcount_value
 
 
 SCHEMA_VERSION = 1
+SCHEMA_VERSION_CACHED = 2
 OBJECTIVE_ID = "prospective_source_event_vs_grid_quality_time_v1"
+OBJECTIVE_ID_CACHED = "prospective_source_event_vs_grid_quality_time_cached_physical_f32_v2"
+CACHE_POLICY_OFF = "off"
+CACHE_POLICY_PER_METHOD_REPEAT = "per-method-repeat-physical-f32"
+CACHE_POLICIES = (CACHE_POLICY_OFF, CACHE_POLICY_PER_METHOD_REPEAT)
+CACHE_SCOPE_OFF = "disabled; every primary candidate hard score is evaluated directly"
+CACHE_SCOPE_REPEAT = "fresh physical-f32 hard-count cache per method and paired repeat; shared across that repeat's five seeds; never shared across event/grid methods or repeats"
+CACHE_KEY_OFF = "none"
+CACHE_KEY_REPEAT = "SHA256 of the exact 49 little-endian float32 source bytes; cache stores canonical per-layout hard-count metrics only for the fixed basis, target and physical context pinned by this plan; float64 source guards and soft ranking are recomputed; golden-thread audits always bypass this cache"
 REPEATS = 3
 SEED_ORDER = (17, 29, 43, 71, 101)
 SEGMENT_NAMES = ("schema8_initialization", "schema6_endpoint",
@@ -47,6 +57,19 @@ WALL_BUDGET_SECONDS = 600.0
 PROGRESS_EVERY = 10
 MATCHED_ATTEMPTS = (3, 259, 515, 771, 1027, 1031)
 MATCHED_WALL_SECONDS = (60.0, 300.0, 600.0)
+
+
+def _objective_for_cache_policy(cache_policy: str) -> str:
+    if cache_policy == CACHE_POLICY_OFF:
+        return OBJECTIVE_ID
+    if cache_policy == CACHE_POLICY_PER_METHOD_REPEAT:
+        return OBJECTIVE_ID_CACHED
+    raise ValueError("cache policy must be one of %s" % (", ".join(CACHE_POLICIES),))
+
+
+def _schema_for_cache_policy(cache_policy: str) -> int:
+    _objective_for_cache_policy(cache_policy)
+    return SCHEMA_VERSION if cache_policy == CACHE_POLICY_OFF else SCHEMA_VERSION_CACHED
 
 
 def _sha(path: str | Path) -> str:
@@ -229,7 +252,9 @@ def freeze(*, coverage_plan_file: Path, expected_coverage_plan_sha256: str,
            expected_previous_sha256: str, segment_plan_file: Path,
            expected_segment_plan_sha256: str, segment_report_file: Path,
            expected_segment_report_sha256: str, selected_weights_file: Path,
-           output_plan_file: Path) -> tuple[Path, str]:
+           output_plan_file: Path,
+           cache_policy: str = CACHE_POLICY_OFF) -> tuple[Path, str]:
+    objective_id = _objective_for_cache_policy(cache_policy)
     output_plan_file = output_plan_file.expanduser()
     if os.path.lexists(output_plan_file):
         raise FileExistsError("frozen event plan already exists: %s" % output_plan_file)
@@ -277,7 +302,8 @@ def freeze(*, coverage_plan_file: Path, expected_coverage_plan_sha256: str,
         "parent_lineage_artifacts": artifacts,
     }
     payload = {
-        "schema_version": SCHEMA_VERSION, "objective_id": OBJECTIVE_ID,
+        "schema_version": _schema_for_cache_policy(cache_policy), "objective_id": objective_id,
+        "cache_policy": cache_policy,
         "status": "frozen_prospective_quality_time_plan",
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "coverage_plan_file": str(coverage_plan_file.resolve()),
@@ -305,13 +331,13 @@ def freeze(*, coverage_plan_file: Path, expected_coverage_plan_sha256: str,
             "seed_order": list(SEED_ORDER), "segments_per_seed": list(SEGMENT_NAMES),
             "segment_start": "frozen seed-17 reference source vector",
             "event_candidates": "per-layout/dose affine crossings, segment endpoints and interval midpoints; exact float64 source duplicates deduplicated; when more than 257 proposals exist, a deterministic stratified subset of 257 is evaluated per segment. This is not an exhaustive threshold partition and may miss narrow feasible intervals.",
-            "grid_candidates": "every k/256 point, k=0..256, on each of four segments per seed; duplicate slots retained and scored; cross-method caches disabled",
+            "grid_candidates": "every k/256 point, k=0..256, on each of four segments per seed; duplicate slots retained and scored",
             "protected_incumbent_roles": ["reference", "that seed's pinned initialization", "best-known FIT-qualified slot 4755 seed 101"],
             "candidate_cap_per_arm_seed_including_protected": ATTEMPT_CAP_PER_ARM_SEED,
             "wall_clock_budget_seconds_per_arm_seed": WALL_BUDGET_SECONDS,
             "wall_budget_semantics": "10-minute arm budget includes proposal setup, all distinct protected incumbents, canonical scoring, original-host-thread golden audits, source guards, and progress writes; checked between candidates, so an in-flight canonical+golden audit completes and may overrun the cap; protected incumbents are always evaluated first",
             "protected_incumbents": "all distinct protected vectors scored first even if they overrun the wall budget; attempts count toward candidate cap",
-            "hard_evaluator": "canonical source_coverage.hard_metrics float32 at doses .98/1/1.02 on all seven FIT layouts; primary score at one CPU thread, then exact per-layout hard-count audit at the original host torch thread count captured at run start for reference/best-known and every otherwise-qualified candidate; no score cache",
+            "hard_evaluator": "canonical source_coverage.hard_metrics float32 at doses .98/1/1.02 on all seven FIT layouts; primary score at one CPU thread, then exact per-layout hard-count audit at the original host torch thread count captured at run start for reference/best-known and every otherwise-qualified candidate",
             "thread_count_stability": "reference and best-known vectors must match exactly between one thread and the recorded original host thread count or the run aborts; every otherwise-qualified proposal is audited the same way and rejected on any mismatch; restore the one-thread arm setting after each audit",
             "every_candidate_domain_audit": ["augmented guarded source domain", "full original nominal polytope", "float32 critical guards"],
             "qualification": "same hard gates as schema-8 FIT selection plus every source/domain guard",
@@ -320,7 +346,11 @@ def freeze(*, coverage_plan_file: Path, expected_coverage_plan_sha256: str,
             "paired_order": ["event_then_grid", "grid_then_event", "event_then_grid"],
             "fixed_seeds_are_paired_repeats_not_independent_groups": True,
             "shared_setup": "original and exactly three fixed new FIT bases are prepared once outside per-arm timers and reported separately; arm timers include proposal setup, anchor scoring, candidate scoring/audits and periodic report writes",
-            "cache_policy": "no within-arm or cross-arm score cache; both methods use one CPU thread for primary canonical hard metrics and the same original-host-thread golden audit on protected baselines and otherwise-qualified candidates; prior resident-only 1.71x timing is not an algorithm speedup claim",
+            "cache_policy": cache_policy,
+            "cache_scope": CACHE_SCOPE_OFF if cache_policy == CACHE_POLICY_OFF else CACHE_SCOPE_REPEAT,
+            "cache_key_and_payload": CACHE_KEY_OFF if cache_policy == CACHE_POLICY_OFF else CACHE_KEY_REPEAT,
+            "cache_timing": "cache lookups, hit/miss bookkeeping, cache copies, and primary scoring all remain inside each arm wall budget; report separates lookup/copy time from actual primary hard-metric scoring time",
+            "runtime_context": "both methods use one CPU thread for primary canonical hard metrics and the same original-host-thread golden audit on protected baselines and otherwise-qualified candidates; prior resident-only 1.71x timing is not an algorithm speedup claim",
             "primary_quality_time_outcome": "time to improve the preserved best-known qualified checkpoint rank; this rank includes the soft objective, LP-anchor distance and stable-order tie-breaks, so a rank improvement alone is not a hard-PV or additional-pixel-coverage improvement",
             "separate_hard_pv_outcome": "time to a strictly better tuple of new-FIT hard band, worst-dose L2, and nominal L2 pixel counts than the preserved best-known checkpoint; report separately from checkpoint-rank improvement",
             "secondary_outcomes": ["quality and hard-PV counts at matched candidate attempt counts", "quality and hard-PV counts at 60/300/600-second wall checkpoints", "complete arm runtime"],
@@ -347,8 +377,12 @@ def _validate_event_plan(plan: dict) -> None:
     protocol = plan.get("protocol", {})
     if not isinstance(protocol, dict):
         raise ValueError("frozen event plan protocol must be an object")
-    if (plan.get("schema_version") != SCHEMA_VERSION
-            or plan.get("objective_id") != OBJECTIVE_ID
+    cache_policy = plan.get("cache_policy")
+    expected_cache_scope = CACHE_SCOPE_OFF if cache_policy == CACHE_POLICY_OFF else CACHE_SCOPE_REPEAT
+    expected_cache_key = CACHE_KEY_OFF if cache_policy == CACHE_POLICY_OFF else CACHE_KEY_REPEAT
+    if (plan.get("schema_version") != _schema_for_cache_policy(cache_policy)
+            or cache_policy not in CACHE_POLICIES
+            or plan.get("objective_id") != _objective_for_cache_policy(cache_policy)
             or plan.get("status") != "frozen_prospective_quality_time_plan"
             or plan.get("fixed_fit_layout_hashes") != coverage.PINNED_FIXED_FIT_LAYOUT_HASHES
             or plan.get("lineage_artifact_count") != 14):
@@ -360,7 +394,10 @@ def _validate_event_plan(plan: dict) -> None:
             or not isinstance(protocol.get("event_candidates"), str)
             or "not an exhaustive threshold partition" not in protocol.get("event_candidates", "")
             or not isinstance(protocol.get("thread_count_stability"), str)
-            or "original host thread count" not in protocol.get("thread_count_stability", "")):
+            or "original host thread count" not in protocol.get("thread_count_stability", "")
+            or protocol.get("cache_policy") != cache_policy
+            or protocol.get("cache_scope") != expected_cache_scope
+            or protocol.get("cache_key_and_payload") != expected_cache_key):
         raise ValueError("event plan budget differs from this runner")
     if not isinstance(plan.get("code_sha256"), dict) or not isinstance(plan.get("input_sha256"), dict):
         raise ValueError("frozen event plan lacks code/input pins")
@@ -426,6 +463,8 @@ def preflight(event_plan_file: Path, expected_event_plan_sha256: str,
     parent_plan, identity = _check_pins(plan, run_parent_preflight=True)
     return {
         "status": "preflight_passed_no_fit_deserialization_no_optics_no_scoring_no_marker",
+        "objective_id": plan["objective_id"],
+        "cache_policy": plan["cache_policy"],
         "event_plan_sha256": expected_event_plan_sha256,
         "coverage_plan_sha256": plan["coverage_plan_sha256"],
         "code_pin_count": len(plan["code_sha256"]),
@@ -457,6 +496,133 @@ def _metrics(rows: list[dict], basis32: dict[str, np.ndarray], weights: np.ndarr
         "no_blank_positive_target_any_dose": all(
             row["no_blank_positive_target_any_dose"] for row in per_layout
         ),
+    }
+
+
+class _PhysicalF32HardMetricCache:
+    """Repeat-local primary hard-count cache; golden audits bypass this object."""
+
+    def __init__(self, rows: list[dict], basis32: dict[str, np.ndarray], physical: dict,
+                 *, plan_sha256: str, method: str, repeat: int):
+        if method not in ("event", "grid") or type(repeat) is not int or repeat < 0:
+            raise ValueError("cache scope must name an event/grid method and nonnegative repeat")
+        if len(plan_sha256) != 64 or any(ch not in "0123456789abcdef" for ch in plan_sha256):
+            raise ValueError("cache scope requires a lowercase frozen event-plan SHA256")
+        self.rows = rows
+        self.basis32 = basis32
+        self.physical = physical
+        self.scope = "plan=%s;method=%s;paired_repeat=%d" % (plan_sha256, method, repeat)
+        self._entries: dict[str, tuple[bytes, dict]] = {}
+        self.lookup_count = 0
+        self.hit_count = 0
+        self.miss_count = 0
+        self.lookup_seconds = 0.0
+        self.copy_seconds = 0.0
+        self.primary_scoring_seconds = 0.0
+
+    def __call__(self, weights: np.ndarray) -> dict:
+        if torch.get_num_threads() != 1:
+            raise RuntimeError("primary physical-f32 cache may only serve one-thread hard metrics; golden audits must bypass it")
+        started = time.monotonic()
+        f32 = np.asarray(weights, dtype=np.float32)
+        if f32.shape != (event_search.SOURCE_COUNT,) or not np.isfinite(f32).all():
+            raise ValueError("physical-f32 cache keys require exactly 49 finite source weights")
+        raw = np.asarray(f32, dtype="<f4").tobytes(order="C")
+        key = hashlib.sha256(raw).hexdigest()
+        self.lookup_count += 1
+        prior = self._entries.get(key)
+        self.lookup_seconds += time.monotonic() - started
+        if prior is not None:
+            if prior[0] != raw:
+                raise RuntimeError("SHA256 collision in physical-f32 source cache")
+            self.hit_count += 1
+            copy_started = time.monotonic()
+            value = copy.deepcopy(prior[1])
+            self.copy_seconds += time.monotonic() - copy_started
+            return value
+
+        self.miss_count += 1
+        score_started = time.monotonic()
+        value = _metrics(self.rows, self.basis32, weights, self.physical)
+        self.primary_scoring_seconds += time.monotonic() - score_started
+        copy_started = time.monotonic()
+        self._entries[key] = (raw, copy.deepcopy(value))
+        self.copy_seconds += time.monotonic() - copy_started
+        return value
+
+    def snapshot(self) -> dict:
+        return {
+            "policy": CACHE_POLICY_PER_METHOD_REPEAT,
+            "scope": self.scope,
+            "lookup_count": self.lookup_count,
+            "hit_count": self.hit_count,
+            "miss_count": self.miss_count,
+            "hit_rate": self.hit_count / self.lookup_count if self.lookup_count else None,
+            "entries": len(self._entries),
+            "lookup_seconds": self.lookup_seconds,
+            "value_copy_seconds": self.copy_seconds,
+            "primary_hard_metric_scoring_seconds": self.primary_scoring_seconds,
+            "key": "sha256_exact_49_little_endian_float32_source_bytes",
+            "payload": "canonical per-layout hard-count metrics only; no float64 guards or soft rank fields",
+        }
+
+
+def _cache_arm_summary(before: dict | None, after: dict | None) -> dict:
+    if before is None or after is None:
+        return {"policy": CACHE_POLICY_OFF, "scope": "disabled",
+                "lookup_count": 0, "hit_count": 0, "miss_count": 0,
+                "entries_added": 0, "entries_at_arm_end": 0,
+                "lookup_seconds": 0.0, "value_copy_seconds": 0.0,
+                "primary_hard_metric_scoring_seconds": 0.0}
+    lookups = after["lookup_count"] - before["lookup_count"]
+    hits = after["hit_count"] - before["hit_count"]
+    return {
+        "policy": after["policy"], "scope": after["scope"],
+        "lookup_count": lookups,
+        "hit_count": hits,
+        "hit_rate": hits / lookups if lookups else None,
+        "miss_count": after["miss_count"] - before["miss_count"],
+        "entries_added": after["entries"] - before["entries"],
+        "entries_at_arm_end": after["entries"],
+        "lookup_seconds": after["lookup_seconds"] - before["lookup_seconds"],
+        "value_copy_seconds": after["value_copy_seconds"] - before["value_copy_seconds"],
+        "primary_hard_metric_scoring_seconds": (
+            after["primary_hard_metric_scoring_seconds"]
+            - before["primary_hard_metric_scoring_seconds"]),
+    }
+
+
+def _cache_run_summary(paired_runs: list[dict]) -> dict:
+    totals = {key: 0.0 for key in (
+        "lookup_count", "hit_count", "miss_count", "entries_added",
+        "lookup_seconds", "value_copy_seconds",
+        "primary_hard_metric_scoring_seconds")}
+    policies = set()
+    for pair in paired_runs:
+        for arm in pair.get("arms", {}).values():
+            stats = arm.get("primary_metric_cache", {})
+            if stats.get("policy"):
+                policies.add(stats["policy"])
+            for key in totals:
+                totals[key] += stats.get(key, 0)
+    totals["policy"] = next(iter(policies)) if len(policies) == 1 else "mixed_or_disabled"
+    totals["hit_rate"] = (totals["hit_count"] / totals["lookup_count"]
+                          if totals["lookup_count"] else None)
+    return totals
+
+
+def _new_repeat_metric_caches(cache_policy: str, rows: list[dict],
+                              basis32: dict[str, np.ndarray], physical: dict,
+                              plan_sha256: str, repeat: int) -> dict:
+    _objective_for_cache_policy(cache_policy)
+    if cache_policy == CACHE_POLICY_OFF:
+        return {"event": None, "grid": None}
+    return {
+        method: _PhysicalF32HardMetricCache(
+            rows, basis32, physical, plan_sha256=plan_sha256,
+            method=method, repeat=repeat,
+        )
+        for method in ("event", "grid")
     }
 
 
@@ -682,8 +848,17 @@ def _arm(method: str, seed: int, repeat: int, plan: dict, rows: list[dict],
          basis32: dict, basis64: dict, basis_torch: dict, targets_torch: dict,
          anchor: np.ndarray, reference_weights: np.ndarray, best_known: np.ndarray,
          domain, targets_by_id: dict, progress_callback,
-         golden_thread_count: int, retain_candidate_records: bool = True) -> dict:
+         golden_thread_count: int, retain_candidate_records: bool = True,
+         primary_metric_evaluator=None) -> dict:
     started = time.monotonic()
+    cache_before = (primary_metric_evaluator.snapshot()
+                    if primary_metric_evaluator is not None else None)
+
+    def score_primary(candidate_weights):
+        if primary_metric_evaluator is None:
+            return _metrics(rows, basis32, candidate_weights, plan["physical"])
+        return primary_metric_evaluator(candidate_weights)
+
     protected = event_search.incumbent_candidates(
         reference_weights=reference_weights,
         initial_incumbent_weights=plan["source_vectors"]["seed_endpoints"][str(seed)]["schema8_initialization"]["weights"],
@@ -716,7 +891,7 @@ def _arm(method: str, seed: int, repeat: int, plan: dict, rows: list[dict],
     for row in protected:
         candidate_started = time.monotonic()
         weights = event_search.validate_weights(row["weights"])
-        actual = _metrics(rows, basis32, weights, plan["physical"])
+        actual = score_primary(weights)
         if "reference" in row["roles"]:
             reference_metrics = actual
             expected_reference_new = plan["reference_new_fit_metrics"].get("per_layout")
@@ -879,7 +1054,7 @@ def _arm(method: str, seed: int, repeat: int, plan: dict, rows: list[dict],
             break
         candidate_started = time.monotonic()
         weights = event_search.validate_weights(candidate["weights"])
-        actual = _metrics(rows, basis32, weights, plan["physical"])
+        actual = score_primary(weights)
         source_audit = {
             "guarded_domain": domain.verify(weights),
             "original_nominal_polytope": coverage.verify_original_nominal_polytope(
@@ -977,6 +1152,8 @@ def _arm(method: str, seed: int, repeat: int, plan: dict, rows: list[dict],
             **_quality_snapshot(best_qualified, selected_rank,
                                 best_known_reference_metrics),
         })
+    cache_after = (primary_metric_evaluator.snapshot()
+                   if primary_metric_evaluator is not None else None)
     result = {
         "method": method, "seed": seed, "paired_repeat": repeat,
         "status": "complete" if stop_reason is None else "incomplete_budget",
@@ -1009,6 +1186,7 @@ def _arm(method: str, seed: int, repeat: int, plan: dict, rows: list[dict],
                     "candidate_scoring_and_audit_seconds": scoring_elapsed,
                     "golden_thread_audit_seconds": golden_audit_elapsed,
                     "periodic_report_io_seconds": report_io_seconds},
+        "primary_metric_cache": _cache_arm_summary(cache_before, cache_after),
         "event_generation_audit": generation_audit if method == "event" else [],
     }
     # Full per-candidate payloads live in the append-only JSONL journal. Returning
@@ -1040,7 +1218,8 @@ def run(event_plan_file: Path, expected_event_plan_sha256: str,
     candidate_journal_path = run_dir / "candidate_audit.jsonl"
     report_path = run_dir / "benchmark_report.json"
     report = {
-        "schema_version": 1, "objective_id": OBJECTIVE_ID,
+        "schema_version": 1, "objective_id": plan["objective_id"],
+        "event_plan_schema_version": plan["schema_version"],
         "status": "preflight_passed", "created_utc": datetime.now(timezone.utc).isoformat(),
         "event_plan_sha256": expected_event_plan_sha256,
         "coverage_plan_sha256": plan["coverage_plan_sha256"],
@@ -1052,6 +1231,8 @@ def run(event_plan_file: Path, expected_event_plan_sha256: str,
         "source_identity": plan["source_identity"],
         "lineage_artifact_count": plan["lineage_artifact_count"],
         "frozen_search_protocol": plan["protocol"],
+        "cache_policy": plan["cache_policy"],
+        "primary_metric_cache_repeats": [],
         "event_candidate_sampling_is_exhaustive": False,
         "narrow_feasible_intervals_may_be_missed_by_stratified_event_subset": True,
         "quality_interpretation": {
@@ -1175,6 +1356,10 @@ def run(event_plan_file: Path, expected_event_plan_sha256: str,
             io_sec += save_progress({"type": "shared_setup_complete", "method_cpu_threads": 1})
             for repeat in range(REPEATS):
                 order = ("event", "grid") if repeat % 2 == 0 else ("grid", "event")
+                repeat_caches = _new_repeat_metric_caches(
+                    plan["cache_policy"], rows, basis32, plan["physical"],
+                    expected_event_plan_sha256, repeat,
+                )
                 for seed in SEED_ORDER:
                     pair = {"paired_repeat": repeat, "seed": seed, "order": list(order), "arms": {}}
                     report["current_pair"] = pair
@@ -1184,6 +1369,7 @@ def run(event_plan_file: Path, expected_event_plan_sha256: str,
                             basis_torch, targets_torch, anchor, reference_weights,
                             best_known, domain, targets_by_id, save_progress,
                             golden_thread_count, retain_candidate_records=False,
+                            primary_metric_evaluator=repeat_caches[method],
                         )
                         pair["arms"][method] = arm
                         report["status"] = "paired_search_running"
@@ -1214,6 +1400,24 @@ def run(event_plan_file: Path, expected_event_plan_sha256: str,
                     report.pop("current_pair", None)
                     report["progress_last_updated_utc"] = datetime.now(timezone.utc).isoformat()
                     io_sec += _atomic_progress(progress_path, report)
+                report["primary_metric_cache_repeats"].append({
+                    "paired_repeat": repeat,
+                    "policy": plan["cache_policy"],
+                    "methods": {
+                        method: (cache.snapshot() if cache is not None else {
+                            "policy": CACHE_POLICY_OFF, "scope": "disabled",
+                            "lookup_count": 0, "hit_count": 0, "miss_count": 0,
+                            "entries": 0, "lookup_seconds": 0.0,
+                            "value_copy_seconds": 0.0,
+                            "primary_hard_metric_scoring_seconds": 0.0,
+                        })
+                        for method, cache in repeat_caches.items()
+                    },
+                    "shared_across_seeds": list(SEED_ORDER),
+                    "isolated_from_other_methods_and_repeats": True,
+                })
+                report["progress_last_updated_utc"] = datetime.now(timezone.utc).isoformat()
+                io_sec += _atomic_progress(progress_path, report)
         finally:
             torch.set_num_threads(original_threads)
         report["paired_time_summaries"] = {
@@ -1226,6 +1430,7 @@ def run(event_plan_file: Path, expected_event_plan_sha256: str,
                 "time_to_hard_pv_improve_preserved_best_seconds",
                 "time_to_hard_pv_improve_preserved_best_seconds"),
         }
+        report["primary_metric_cache_aggregate"] = _cache_run_summary(report["paired_runs"])
         report["status"] = ("complete" if all(
             arm["status"] == "complete" for pair in report["paired_runs"]
             for arm in pair.get("arms", {}).values()
@@ -1283,6 +1488,8 @@ def run(event_plan_file: Path, expected_event_plan_sha256: str,
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--mode", required=True, choices=("freeze", "preflight", "run"))
+    p.add_argument("--cache-policy", choices=CACHE_POLICIES, default=CACHE_POLICY_OFF,
+                   help="freeze-only policy; default off preserves uncached scoring")
     p.add_argument("--event-plan-file")
     p.add_argument("--expected-event-plan-sha256")
     p.add_argument("--expected-previous-sha256")
@@ -1301,6 +1508,8 @@ def parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = parser().parse_args(argv)
     try:
+        if args.mode != "freeze" and args.cache_policy != CACHE_POLICY_OFF:
+            raise ValueError("--cache-policy is a freeze-only plan identity; preflight/run follow the frozen plan")
         if args.mode == "freeze":
             required = (args.coverage_plan_file, args.expected_coverage_plan_sha256,
                         args.expected_previous_sha256, args.segment_plan_file,
@@ -1319,10 +1528,12 @@ def main(argv=None) -> int:
                 expected_segment_report_sha256=args.expected_segment_report_sha256,
                 selected_weights_file=Path(args.selected_weights_file),
                 output_plan_file=Path(args.output_plan_file),
+                cache_policy=args.cache_policy,
             )
             print(json.dumps({"status": "frozen_metadata_only", "event_plan_file": str(path),
                               "event_plan_sha256": digest, "FIT_deserialized": False,
-                              "optics_prepared": False, "marker_created": False}, indent=2))
+                              "optics_prepared": False, "marker_created": False,
+                              "cache_policy": args.cache_policy}, indent=2))
             return 0
         if not args.event_plan_file or not args.expected_event_plan_sha256 or not args.expected_previous_sha256:
             raise ValueError("preflight/run require event plan SHA256 and expected previous report SHA256")
@@ -1337,6 +1548,7 @@ def main(argv=None) -> int:
         result = json.loads(result_path.read_text(encoding="utf-8"))
         print(json.dumps({"status": result["status"], "report_file": str(result_path),
                           "event_plan_sha256": result["event_plan_sha256"],
+                          "cache_policy": result["cache_policy"],
                           "paired_arm_count": sum(len(pair.get("arms", {}))
                                                    for pair in result.get("paired_runs", [])),
                           "calibration_status": result["calibration_status"],
