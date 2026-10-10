@@ -16,9 +16,15 @@ changed or omitted source geometry.
 
 ## Frozen raster and model
 
-GLP input must declare `EQUIV 1 1000 MICRON` and contain integer-coordinate,
-Manhattan `PGON` solids. Coordinates are interpreted as nanometers. Each tile
-is rasterized on a 1024×1024 canvas at 4 nm per pixel. The bounding box is
+GLP input must use the supplied header grammar: `BEGIN` (including the source's
+`/* The metadata are invalid */` comment), `EQUIV 1 1000 MICRON +X,+Y`,
+`CNAME`, `LEVEL`, `CELL <CNAME> PRIME`, Manhattan `PGON N <LEVEL>` solids, and
+`ENDMSG`. Only the `+X,+Y` coordinate orientation is supported; other
+orientations, units, record forms, or geometry are rejected during freeze.
+Coordinates are interpreted as nanometers, with pinned nonnegative input bounds
+of x≤1277 nm and y≤1270 nm from the supplied source inventory. Those absolute
+input limits are separate from raster fit: each tile is centered and checked
+against the full 1024×1024 canvas at 4 nm per pixel. The bounding box is
 translated to the canvas center using a 4 nm multiple. The rasterizer samples
 pixel centers with half-open scanline edges and unions polygon interiors. It
 does not scale, crop, or clip geometry. Target masks, GLP file hashes, raster

@@ -11,7 +11,12 @@ from scripts import evaluate_independent_sources as evaluator
 
 def glp_text(vertices, layer="M1"):
     coordinates = " ".join(str(value) for point in vertices for value in point)
-    return f"EQUIV 1 1000 MICRON\nPGON N {layer} {coordinates}\nENDMSG\n"
+    return (
+        "BEGIN     /* The metadata are invalid */\n"
+        "EQUIV  1  1000  MICRON  +X,+Y\n"
+        "CNAME Temp_Top\nLEVEL M1\nCELL Temp_Top PRIME\n"
+        f"PGON N {layer} {coordinates}\nENDMSG\n"
+    )
 
 
 class IndependentSourceGeometryTests(unittest.TestCase):
@@ -44,6 +49,35 @@ class IndependentSourceGeometryTests(unittest.TestCase):
         self.assertEqual(info["translation_nm"], [12.0, 12.0])
         self.assertEqual(info["raster_bbox_px_halfopen"], [3, 3, 5, 5])
         self.assertEqual(info["raster_sha256"], evaluator._sha256_bytes(mask.tobytes(order="C")))
+
+    def test_actual_stdmetal_header_and_unsupported_orientation(self):
+        actual_header = (
+            "BEGIN     /* The metadata are invalid */\n"
+            "EQUIV  1  1000  MICRON  +X,+Y\n"
+            "CNAME Temp_Top\nLEVEL M1\n\nCELL Temp_Top PRIME\n"
+            "   PGON N M1  0 0 0 65 65 65 65 0\nENDMSG\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "actual.glp"
+            path.write_text(actual_header, encoding="utf-8")
+            parsed = evaluator.parse_glp(path)
+            self.assertEqual(parsed["bbox_nm"], [0, 0, 65, 65])
+            self.assertEqual(parsed["polygon_count"], 1)
+            path.write_text(actual_header.replace("+X,+Y", "-X,+Y"), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "coordinate orientation"):
+                evaluator.parse_glp(path)
+
+    def test_pinned_maximum_absolute_glp_coordinates(self):
+        vertices = [(1273, 1266), (1277, 1266), (1277, 1270), (1273, 1270)]
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "boundary.glp"
+            path.write_text(glp_text(vertices), encoding="utf-8")
+            parsed = evaluator.parse_glp(path)
+            self.assertEqual(parsed["bbox_nm"], [1273, 1266, 1277, 1270])
+            path.write_text(glp_text([(1274, 1266), (1278, 1266),
+                                      (1278, 1270), (1274, 1270)]), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "pinned 1277 x 1270 nm input bounds"):
+                evaluator.parse_glp(path)
 
     def test_union_raster_and_area_are_deterministic(self):
         rectangles = [
@@ -103,9 +137,9 @@ class IndependentSourceGeometryTests(unittest.TestCase):
         ]
         protocol = {"dataset": {"layouts": layouts}}
         records = []
-        for source in ("candidate", "reference", "best_known"):
+        for source in ("event_candidate", "reference", "best_known"):
             for layout in layouts:
-                is_candidate = source == "candidate"
+                is_candidate = source == "event_candidate"
                 metrics = {
                     "target_positive_pixels": 100,
                     "pvband_pixels": 10 if is_candidate else 20,
@@ -128,6 +162,10 @@ class IndependentSourceGeometryTests(unittest.TestCase):
             summary = evaluator._summarize(protocol, records, [], "complete", None,
                                            record_file, "a" * 64)
         self.assertTrue(summary["validation"]["passed"])
+        self.assertEqual(summary["scoring"]["completed_source_layout_records"], 6)
+        self.assertEqual(summary["scoring"]["expected_source_layout_records"], 6)
+        self.assertEqual(summary["scoring"]["scored_layout_count_by_source"]["event_candidate"], 2)
+        self.assertEqual(summary["scope_summaries"]["pooled"]["event_candidate"]["layout_count"], 2)
         self.assertTrue(summary["primary_claim_gate"]["eligible"])
         self.assertLess(summary["scope_summaries"]["pooled"][
             "event_candidate_minus_reference"]["pvband_rate"]["bootstrap_95_percentile_ci"][1], 0)
@@ -170,7 +208,7 @@ class IndependentSourceGeometryTests(unittest.TestCase):
                          nominal_absolute_relative_area_error=0.1,
                          worst_dose_absolute_relative_area_error=0.1)
         records = []
-        for source, method_metrics in (("candidate", candidate), ("reference", reference),
+        for source, method_metrics in (("event_candidate", candidate), ("reference", reference),
                                        ("best_known", reference)):
             records.append({
                 "status": "scored", "source": source, "layout_id": layout["layout_id"],

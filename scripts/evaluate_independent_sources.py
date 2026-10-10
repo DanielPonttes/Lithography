@@ -80,8 +80,8 @@ COMPUTE_POLICY = {
 }
 BOOTSTRAP_SEED = 20261010
 BOOTSTRAP_DRAWS = 10000
-MAX_COORD_X_NM = 1275
-MAX_COORD_Y_NM = 1265
+MAX_COORD_X_NM = 1277
+MAX_COORD_Y_NM = 1270
 PROTOCOL_SCHEMA = 1
 
 
@@ -262,28 +262,57 @@ def _validate_simple_polygon(vertices: list[tuple[int, int]], source: str) -> No
 
 
 def parse_glp(path: Path) -> dict:
-    """Parse EQUIV 1 1000 MICRON and Manhattan PGON solids in nanometers."""
+    """Parse the pinned StdMetal/StdContact header and Manhattan PGONs in nm."""
     raw = path.read_bytes()
     try:
         lines = raw.decode("utf-8-sig").splitlines()
     except UnicodeDecodeError as exc:
         raise ValueError(f"{path}: GLP is not UTF-8 text") from exc
+    begin_seen = False
     equiv_seen = False
+    cname = None
+    level = None
+    cell_seen = False
     end_seen = False
     polygons: list[list[tuple[int, int]]] = []
     for line_number, raw_line in enumerate(lines, 1):
         line = raw_line.split("#", 1)[0].strip()
         if not line:
             continue
+        if end_seen:
+            raise ValueError(f"{path}:{line_number}: records after ENDMSG are unsupported")
+        if line.startswith("BEGIN"):
+            if begin_seen or equiv_seen or polygons or not re.fullmatch(
+                r"BEGIN(?:\s+/\*.*\*/)?", line
+            ):
+                raise ValueError(f"{path}:{line_number}: malformed or repeated BEGIN")
+            begin_seen = True
+            continue
         fields = line.split()
         token = fields[0].upper()
         if token == "EQUIV":
-            if equiv_seen or fields != ["EQUIV", "1", "1000", "MICRON"]:
-                raise ValueError(f"{path}:{line_number}: expected exactly one EQUIV 1 1000 MICRON")
+            if not begin_seen or equiv_seen or fields[:4] != ["EQUIV", "1", "1000", "MICRON"]:
+                raise ValueError(f"{path}:{line_number}: expected one EQUIV 1 1000 MICRON header")
+            if fields[4:] != ["+X,+Y"]:
+                raise ValueError(
+                    f"{path}:{line_number}: unsupported EQUIV coordinate orientation; expected +X,+Y"
+                )
             equiv_seen = True
+        elif token == "CNAME":
+            if not equiv_seen or cname is not None or len(fields) != 2 or cell_seen or polygons:
+                raise ValueError(f"{path}:{line_number}: malformed, repeated, or misplaced CNAME")
+            cname = fields[1]
+        elif token == "LEVEL":
+            if cname is None or level is not None or len(fields) != 2 or cell_seen or polygons:
+                raise ValueError(f"{path}:{line_number}: malformed, repeated, or misplaced LEVEL")
+            level = fields[1]
+        elif token == "CELL":
+            if level is None or cell_seen or fields != ["CELL", cname, "PRIME"]:
+                raise ValueError(f"{path}:{line_number}: expected CELL <CNAME> PRIME after LEVEL")
+            cell_seen = True
         elif token == "PGON":
-            if not equiv_seen or end_seen or len(fields) < 8:
-                raise ValueError(f"{path}:{line_number}: malformed PGON or missing EQUIV")
+            if not cell_seen or len(fields) < 11 or fields[1] != "N" or fields[2] != level:
+                raise ValueError(f"{path}:{line_number}: malformed PGON or missing supported GLP header")
             coordinate_fields = fields[3:]
             if len(coordinate_fields) % 2:
                 raise ValueError(f"{path}:{line_number}: PGON needs x/y coordinate pairs")
@@ -302,20 +331,22 @@ def parse_glp(path: Path) -> dict:
             _validate_simple_polygon(vertices, f"{path}:{line_number}")
             polygons.append(vertices)
         elif token == "ENDMSG":
-            if fields != ["ENDMSG"] or end_seen:
+            if fields != ["ENDMSG"] or end_seen or not cell_seen or not polygons:
                 raise ValueError(f"{path}:{line_number}: malformed or repeated ENDMSG")
             end_seen = True
         else:
             raise ValueError(f"{path}:{line_number}: unsupported GLP record {fields[0]!r}")
-    if not equiv_seen or not end_seen or not polygons:
-        raise ValueError(f"{path}: missing EQUIV, PGON geometry, or ENDMSG")
+    if not begin_seen or not equiv_seen or cname is None or level is None or not cell_seen or not end_seen or not polygons:
+        raise ValueError(f"{path}: missing supported BEGIN/EQUIV/CNAME/LEVEL/CELL header, PGON geometry, or ENDMSG")
     all_points = [point for polygon in polygons for point in polygon]
     min_x = min(point[0] for point in all_points)
     min_y = min(point[1] for point in all_points)
     max_x = max(point[0] for point in all_points)
     max_y = max(point[1] for point in all_points)
     if min_x < 0 or min_y < 0 or max_x > MAX_COORD_X_NM or max_y > MAX_COORD_Y_NM:
-        raise ValueError(f"{path}: coordinates exceed the frozen 1275 x 1265 nm source bounds")
+        raise ValueError(
+            f"{path}: coordinates exceed the pinned {MAX_COORD_X_NM} x {MAX_COORD_Y_NM} nm input bounds"
+        )
     return {
         "raw_sha256": _sha256_bytes(raw),
         "polygons": polygons,
@@ -1006,7 +1037,8 @@ def _summarize(protocol: dict, records: list[dict], scored: list[dict],
     layouts = protocol["dataset"]["layouts"]
     layout_by_id = {row["layout_id"]: row for row in layouts}
     by_source: dict[str, dict[str, dict]] = defaultdict(dict)
-    source_ids = {"candidate": "event_candidate", "reference": "reference", "best_known": "best_known"}
+    # These are the exact source identifiers emitted by run().
+    source_ids = {"event_candidate": "event_candidate", "reference": "reference", "best_known": "best_known"}
     for row in records:
         source = row.get("source")
         layout_id = row.get("layout_id")
