@@ -31,6 +31,11 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = Path(__file__).resolve()
 LIGHT_SOURCE_PATH = REPO_ROOT / "light_source.py"
+# ``python scripts/evaluate_independent_sources.py ...`` puts only ``scripts/``
+# at sys.path[0]. Add the checkout root so the CLI can import light_source.py
+# from any working directory, not just when the caller sets PYTHONPATH.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 FAMILY_NAMES = ("StdMetal271", "StdContact165")
 EXPECTED_FILE_COUNTS = {"StdMetal271": 271, "StdContact165": 165}
 EXPECTED_UPSTREAM_HEAD = "9c74e82218e377eaf6d02d113fc1ce6e36c92aa6"
@@ -917,7 +922,9 @@ def evaluate_methods(mask: np.ndarray, target: np.ndarray, weights: list[float],
 
 
 def _append_jsonl(path: Path, value: dict) -> None:
-    raw = _json_bytes(value)
+    # Progress readers consume one JSON object per physical line. Keep nested
+    # values compact so a runtime error cannot make the durable journal unreadable.
+    raw = (json.dumps(value, separators=(",", ":"), sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
     with path.open("ab") as stream:
         stream.write(raw)
         stream.flush()

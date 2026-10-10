@@ -1,6 +1,10 @@
 """Focused synthetic checks for fixed-source independent GLP evaluation."""
 import importlib.util
+import json
+import subprocess
+import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -78,6 +82,136 @@ class IndependentSourceGeometryTests(unittest.TestCase):
                                       (1278, 1270), (1274, 1270)]), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "pinned 1277 x 1270 nm input bounds"):
                 evaluator.parse_glp(path)
+
+    def test_jsonl_append_round_trips_error_and_all_canonical_source_records(self):
+        records = [
+            {"status": "error", "source": "event_candidate", "layout_id": "synthetic:0",
+             "error": "RuntimeError: first line" + chr(10) + "second line",
+             "error_kind": "runtime"},
+            {"status": "scored", "source": "event_candidate", "layout_id": "synthetic:0",
+             "metrics": {"canonical_cpu_1thread_basis": {"values": [1, 2, 3]}}},
+            {"status": "scored", "source": "reference", "layout_id": "synthetic:0",
+             "metrics": {"canonical_cpu_1thread_basis": {"values": [4, 5, 6]}}},
+            {"status": "scored", "source": "best_known", "layout_id": "synthetic:0",
+             "metrics": {"canonical_cpu_1thread_basis": {"values": [7, 8, 9]}}},
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "records.jsonl"
+            for record in records:
+                evaluator._append_jsonl(path, record)
+            self.assertEqual(len(path.read_bytes().splitlines()), len(records))
+            self.assertEqual(evaluator._read_records(path), records)
+        self.assertEqual(
+            {row["source"] for row in records if row["status"] == "scored"},
+            {"event_candidate", "reference", "best_known"},
+        )
+
+    @unittest.skipUnless(importlib.util.find_spec("torch"), "PyTorch is supplied on the scoring host")
+    def test_standalone_cli_synthetic_64px_run_uses_real_light_source_api(self):
+        driver = textwrap.dedent(r"""
+            import hashlib, json, sys
+            from pathlib import Path
+            from runpy import run_path
+            import numpy as np
+
+            script_path = Path(sys.argv[1]).resolve()
+            root = Path(sys.argv[2]).resolve()
+            repository_root = script_path.parent.parent
+            sys.path[:] = [entry for entry in sys.path
+                           if Path(entry or ".").resolve() != repository_root]
+            assert repository_root not in [Path(entry or ".").resolve() for entry in sys.path]
+            evaluator = run_path(str(script_path), run_name="standalone_cli_smoke")
+            evaluator = evaluator["main"].__globals__
+            physical = evaluator["PHYSICAL"]
+            physical["canvas_size_px"] = 64
+            physical["sensitivity_canvas_size_px"] = 32
+            source_families = (("StdMetal271", "StdMetal"), ("StdContact165", "StdContact"))
+            glp_text = (
+                "BEGIN     /* The metadata are invalid */\n"
+                "EQUIV  1  1000  MICRON  +X,+Y\n"
+                "CNAME Temp_Top\nLEVEL M1\nCELL Temp_Top PRIME\n"
+                "PGON N M1 0 0 96 0 96 96 0 96\nENDMSG\n"
+            )
+            layouts, source_files, family_directories = [], [], {}
+            for protocol_family, directory_name in source_families:
+                family_dir = root / "dataset" / directory_name
+                family_dir.mkdir(parents=True)
+                family_directories[protocol_family] = str(family_dir)
+                glp_path = family_dir / "synthetic.glp"
+                glp_path.write_text(glp_text, encoding="utf-8")
+                parsed = evaluator["parse_glp"](glp_path)
+                mask, raster = evaluator["rasterize_polygons"](
+                    parsed["polygons"], parsed["bbox_nm"], canvas_size_px=64
+                )
+                snapshot = root / "targets" / (directory_name + ".mask")
+                snapshot.parent.mkdir(exist_ok=True)
+                packed = np.packbits(mask.reshape(-1), bitorder="big").tobytes()
+                snapshot.write_bytes(packed)
+                source_files.append({
+                    "family": protocol_family, "path": str(glp_path),
+                    "relative_path": "synthetic.glp", "cell_group": "synthetic",
+                    "raw_glp_sha256": parsed["raw_sha256"],
+                })
+                layouts.append({
+                    "layout_id": protocol_family + ":synthetic.glp",
+                    "family": protocol_family, "cell_group": "synthetic",
+                    "source_glp": str(glp_path), "raw_glp_sha256": parsed["raw_sha256"],
+                    "target_snapshot": str(snapshot),
+                    "target_snapshot_sha256": hashlib.sha256(packed).hexdigest(),
+                    "polygon_count": parsed["polygon_count"],
+                    "raster": {**raster, "positive_pixel_count": int(mask.sum())},
+                    "aliases": [{"relative_path": "synthetic.glp"}],
+                })
+
+            weights = {}
+            for source, index in (("event_candidate", 24), ("reference", 16), ("best_known", 32)):
+                vector = np.zeros(49, dtype=np.float64)
+                vector[index] = 1.0
+                weights[source] = {"weights": vector.tolist(), **evaluator["vector_hashes"](vector)}
+            pins = {
+                "cached_plan_file": "synthetic-cached-plan.json",
+                "event_candidate_file": "synthetic-event-candidate.json",
+                "event_report_file": "synthetic-event-report.json",
+            }
+            protocol = {
+                "input_pins": pins,
+                "runtime_policy": {"time_budget_seconds": 300},
+                "source_vectors": weights,
+                "dataset": {
+                    "family_directories": family_directories,
+                    "source_files": source_files,
+                    "layouts": layouts,
+                },
+            }
+            evaluator["_validate_protocol"] = lambda path, digest: (protocol, digest)
+            evaluator["_validate_pinned_inputs"] = lambda *paths: pins
+            protocol_path = root / "synthetic-protocol.json"
+            protocol_path.write_text("{}" + chr(10), encoding="utf-8")
+            run_dir = root / "synthetic-run"
+            code = evaluator["main"]([
+                "run", "--protocol", str(protocol_path), "--run-dir", str(run_dir),
+                "--expected-protocol-sha256", "a" * 64, "--device", "cpu",
+                "--time-budget-seconds", "300",
+            ])
+            if code != 0:
+                raise SystemExit(code)
+            result = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+            rows = evaluator["_read_records"](run_dir / "layout_results.jsonl")
+            assert result["status"] == "complete", result
+            assert result["scoring"]["completed_source_layout_records"] == 6, result["scoring"]
+            assert len(rows) == 6, len(rows)
+            assert {row["source"] for row in rows} == {"event_candidate", "reference", "best_known"}
+            assert "light_source" in sys.modules
+            print("synthetic_standalone_cli_smoke=passed")
+        """)
+        with tempfile.TemporaryDirectory() as temporary:
+            completed = subprocess.run(
+                [sys.executable, "-B", "-c", driver,
+                 str(evaluator.SCRIPT_PATH), temporary],
+                cwd=temporary, capture_output=True, text=True, timeout=180,
+            )
+        self.assertEqual(completed.returncode, 0, msg=completed.stdout + completed.stderr)
+        self.assertIn("synthetic_standalone_cli_smoke=passed", completed.stdout)
 
     def test_union_raster_and_area_are_deterministic(self):
         rectangles = [
